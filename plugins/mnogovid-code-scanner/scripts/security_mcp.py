@@ -105,7 +105,7 @@ def command(root: Path, ident: str) -> tuple[dict[str,Any],list[str],str]:
 def redact(value: Any) -> Any:
     if isinstance(value,dict): return {str(k):redact("[REDACTED]" if re.search(r"(token|secret|password|api.?key|private.?key)",str(k),re.I) else v) for k,v in value.items()}
     if isinstance(value,list): return [redact(v) for v in value]
-    if isinstance(value,str) and re.search(r"(ghp_|sk-|AKIA|-----BEGIN)",value): return "[REDACTED]"
+    if isinstance(value,str) and re.search(r"(ghp_|sk-|AKIA|-----BEGIN|(?:token|secret|password|api[_-]?key)\s*[=:])",value,re.I): return "[REDACTED]"
     return value
 
 def markdown_cell(value: Any) -> str:
@@ -192,6 +192,20 @@ def scan_verdict(findings: list[dict[str, Any]], notes: dict[int, dict[str, Any]
     if any(value=="needs_review" for value in classifications) or not notes: return ("Review required", "Scanner findings need human verification before they are treated as vulnerabilities or dismissed.")
     return ("No confirmed vulnerabilities", "The recorded AI assessment did not confirm the scanner findings; retain the evidence for review.")
 
+def scanner_recovery(run: dict[str, Any]) -> str:
+    adapter = str(run.get("adapter") or "scanner")
+    steps = {
+        "semgrep":"Re-run the previewed Semgrep command and confirm that it produces JSON with a `results` array. If configuration download was blocked, grant network access for that run or use a local ruleset.",
+        "osv-scanner":"Run `osv-scanner --version`, then re-run the previewed OSV Scanner command. If it still fails, update or reinstall OSV Scanner and retain its diagnostic output for review.",
+        "pip-audit":"Re-run `pip-audit -f json` from the project root. If it cannot resolve dependencies, verify the project dependency files and the approved network connection.",
+        "npm-audit":"Re-run `npm audit --json` from the project root. If it cannot resolve the registry, verify the lockfile and the approved network connection.",
+        "grype":"Re-run the previewed Grype command. If its vulnerability database could not update, verify the approved network connection and refresh the local Grype database.",
+    }
+    diagnostic = str(redact(run.get("stderrSnippet") or "")).strip().replace("\n"," ")
+    diagnostic = diagnostic[:500]
+    suffix = f" Diagnostic (redacted): {diagnostic}" if diagnostic else ""
+    return steps.get(adapter,"Re-run the previewed scanner command and inspect its diagnostic output before treating this area as covered.") + suffix
+
 def host_ai_notes(report: dict[str, Any], finding_count: int) -> dict[int, dict[str, Any]]:
     triage = report.get("hostAiTriage")
     items = triage.get("findingNotes") if isinstance(triage,dict) else None
@@ -215,12 +229,18 @@ def render_report(root: Path, mode: str, report_id: str, generated: str, report:
     lines = ["# Security scan report", ""]
     runs = scanner_results(report); findings = findings_from(report,runs); ai_notes = host_ai_notes(report,len(findings))
     completed = [run for run in runs if run.get("resultStatus")=="complete"]
+    incomplete = [run for run in runs if run.get("resultStatus")=="incomplete"]
     failed = [run for run in runs if run.get("resultStatus")=="failed"]
     verdict, explanation = scan_verdict(findings,ai_notes)
     lines += ["## Verdict", "", f"**{verdict}.** {explanation}", ""]
-    lines += markdown_table(["Workspace","Mode","Findings","Completed scanners","Failed scanners"], [[root,mode,len(findings),len(completed),len(failed)]])
-    if failed:
-        lines += ["**Coverage gap:** " + ", ".join(str(run.get("adapter") or "unknown") for run in failed) + " did not complete. Their result is unavailable and should not be interpreted as a clean check.", ""]
+    lines += markdown_table(["Workspace","Mode","Findings","Completed scanners","Incomplete / failed"], [[root,mode,len(findings),len(completed),len(incomplete) + len(failed)]])
+    if incomplete or failed:
+        lines += ["### Coverage gaps", ""]
+        for run in incomplete:
+            lines += [f"- **{run.get('adapter') or 'unknown'}:** exited with code {run.get('exitCode')} but produced no findings that this version could normalize. This is not a clean result. **How to fix:** {scanner_recovery(run)}"]
+        for run in failed:
+            lines += [f"- **{run.get('adapter') or 'unknown'}:** stopped with code {run.get('exitCode')} before a usable result was produced. This does not prove that no vulnerabilities exist. **How to fix:** {scanner_recovery(run)}"]
+        lines.append("")
     lines += ["## What needs attention", ""]
     if not findings:
         lines += ["No scanner findings were reported. Review failed or skipped scanners before treating this as a clean result.", ""]
@@ -288,6 +308,29 @@ def parse_report(value: Any, adapter: str|None=None) -> list[dict[str,Any]]:
             if isinstance(result,dict): findings.append({"adapter":adapter,"ruleId":result.get("test_id"),"severity":result.get("issue_severity"),"confidence":result.get("issue_confidence"),"title":result.get("issue_text"),"location":result.get("filename"),"line":result.get("line_number")})
     elif isinstance(value,dict) and isinstance(value.get("results"),list):
         for result in value["results"][:200]: findings.append({"adapter":adapter,"ruleId":result.get("check_id") or result.get("rule_id"),"severity":result.get("extra",{}).get("severity") if isinstance(result.get("extra"),dict) else None,"title":result.get("extra",{}).get("message","") if isinstance(result.get("extra"),dict) else str(result)[:300],"location":result.get("path"),"line":result.get("start",{}).get("line") if isinstance(result.get("start"),dict) else None})
+    elif adapter=="pip-audit" and isinstance(value,list):
+        for dependency in value[:200]:
+            if not isinstance(dependency,dict): continue
+            for vuln in dependency.get("vulns",[]) or []:
+                if isinstance(vuln,dict): findings.append({"adapter":adapter,"ruleId":vuln.get("id"),"title":vuln.get("description"),"severity":"unknown","library":dependency.get("name"),"installedVersion":dependency.get("version"),"fixedVersion":", ".join(vuln.get("fix_versions",[])) if isinstance(vuln.get("fix_versions"),list) else None})
+    elif adapter=="npm-audit" and isinstance(value,dict) and isinstance(value.get("vulnerabilities"),dict):
+        for package_name,detail in value["vulnerabilities"].items():
+            if not isinstance(detail,dict): continue
+            via=detail.get("via",[]); via=via if isinstance(via,list) else [via]
+            advisory_items=[item for item in via if isinstance(item,dict)] or [{}]
+            for advisory in advisory_items:
+                fix=detail.get("fixAvailable")
+                fixed_version=fix.get("version") if isinstance(fix,dict) else None
+                findings.append({"adapter":adapter,"ruleId":advisory.get("url") or advisory.get("source"),"severity":advisory.get("severity") or detail.get("severity"),"title":advisory.get("title") or f"Vulnerable dependency: {package_name}","library":package_name,"installedVersion":detail.get("range"),"fixedVersion":fixed_version})
+    elif adapter=="grype" and isinstance(value,dict) and isinstance(value.get("matches"),list):
+        for match in value["matches"][:200]:
+            if not isinstance(match,dict): continue
+            vulnerability=match.get("vulnerability") if isinstance(match.get("vulnerability"),dict) else {}
+            artifact=match.get("artifact") if isinstance(match.get("artifact"),dict) else {}
+            fix=vulnerability.get("fix") if isinstance(vulnerability.get("fix"),dict) else {}
+            locations=artifact.get("locations") if isinstance(artifact.get("locations"),list) else []
+            location=(locations[0].get("path") if locations and isinstance(locations[0],dict) else None)
+            findings.append({"adapter":adapter,"ruleId":vulnerability.get("id"),"severity":vulnerability.get("severity"),"title":vulnerability.get("description") or vulnerability.get("id"),"library":artifact.get("name"),"installedVersion":artifact.get("version"),"fixedVersion":", ".join(fix.get("versions",[])) if isinstance(fix.get("versions"),list) else None,"location":location})
     elif isinstance(value,list):
         for item in value[:200]: findings.append({"adapter":adapter,"severity":item.get("Severity") or item.get("severity") if isinstance(item,dict) else "unknown","title":str(item)[:500]})
     return redact(findings)
@@ -307,7 +350,11 @@ def run_one(root:Path, ident:str, allow:bool, virtual:bool) -> dict[str,Any]:
         except json.JSONDecodeError: pass
     findings=parse_report(parsed,ident) if parsed is not None else []
     secret=spec["category"]=="secrets"
-    return {**result,"execution":"executed","processStarted":True,"resultStatus":"complete" if completed.returncode in (0,1) else "failed","exitCode":completed.returncode,"parsedJson":parsed is not None,"findings":findings,"counts":{"findings":len(findings)},"stdoutSnippet":"" if secret else redact(text[:4000]),"stderrSnippet":"" if secret else redact(err[:4000])}
+    if completed.returncode==0: status="complete"
+    elif completed.returncode==1 and findings: status="complete"
+    elif completed.returncode==1: status="incomplete"
+    else: status="failed"
+    return {**result,"execution":"executed","processStarted":True,"resultStatus":status,"exitCode":completed.returncode,"parsedJson":parsed is not None,"findings":findings,"counts":{"findings":len(findings)},"stdoutSnippet":"" if secret else redact(text[:4000]),"stderrSnippet":"" if secret else redact(err[:4000])}
 
 def content(value:Any,error:bool=False)->dict[str,Any]: return {"isError":error,"content":[{"type":"text","text":json.dumps(value,ensure_ascii=False)}]}
 def call(name:str,args:dict[str,Any])->dict[str,Any]:
