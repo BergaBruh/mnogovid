@@ -23,7 +23,8 @@ themselves never invoke an AI model.
 4. After approval, call `security_ai_triage_payload`, then have the host model
    analyze its returned payload. Treat the model assessment as advisory:
    preserve scanner evidence and classify each finding as true positive, false
-   positive, or needs review.
+   positive, or needs review. It must return a detailed evidence-based note for
+   every input finding using the payload's zero-based `findingIndex`.
 5. Record that exact redacted assessment in the lifecycle with
    `security_record_run` using kind `host_ai_triage`. The final report must use
    the recorded assessment, not a reconstructed summary.
@@ -37,4 +38,6 @@ themselves never invoke an AI model.
 - Share only the bounded, redacted payload prepared by the MCP server.
 - An approved AI scan cannot be finalized while its host-AI triage is still
   unrecorded.
+- An approved AI scan with findings cannot be recorded or finalized unless each
+  finding has a detailed AI note; the report renders that note in its row.
 - No project source, dependency, or lockfile is modified.

@@ -112,7 +112,9 @@ Each scan stores its report without overwriting earlier results at
 summary and per-scanner vulnerability tables plus a Mermaid severity chart.
 AI and agent modes also include the exact recorded `Host AI triage` and
 `Independent agent review` sections; an approved stage cannot be finalized
-without its corresponding recorded result.
+without its corresponding recorded result. For every scanner finding in either
+mode, the results table also includes the detailed, evidence-based AI note that
+matches its zero-based finding index.
 Each vulnerability table shows the issue, severity, affected version, fixed
 version, and responsible file lines or libraries. Raw JSON is not written to
 `result.md`.

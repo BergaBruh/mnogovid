@@ -18,7 +18,8 @@ separate `security-triage` agent review.
 2. Preview and run approved scanners, recording every preview, result, and
    skip in that lifecycle. Create the redacted payload and have the host model
    analyze it only after the separate AI-sharing approval. Record that exact
-   assessment with kind `host_ai_triage` before delegation.
+   assessment with kind `host_ai_triage` before delegation, including a detailed
+   AI note for every finding at its zero-based `findingIndex`.
 3. After host-AI triage is complete, ask separately: “May I give the bounded,
    redacted findings and AI triage to the dedicated `security-triage` agent for
    an independent review?” Do not delegate before an unambiguous yes.

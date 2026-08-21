@@ -179,10 +179,29 @@ def vulnerability_row(finding: dict[str, Any]) -> list[Any]:
         finding_location_or_library(finding),
     ]
 
+def host_ai_notes(report: dict[str, Any], finding_count: int) -> dict[int, dict[str, Any]]:
+    triage = report.get("hostAiTriage")
+    items = triage.get("findingNotes") if isinstance(triage,dict) else None
+    if not isinstance(items,list): return {}
+    notes: dict[int,dict[str,Any]] = {}
+    for item in items:
+        if isinstance(item,dict) and isinstance(item.get("findingIndex"),int) and 0 <= item["findingIndex"] < finding_count:
+            notes[item["findingIndex"]]=item
+    return notes
+
+def validate_host_ai_triage(run: dict[str, Any], entry: dict[str, Any]) -> None:
+    finding_count = sum(len(item.get("findings",[])) for item in run["scannerResults"] if isinstance(item.get("findings"),list))
+    if finding_count == 0: return
+    notes = entry.get("findingNotes")
+    if not isinstance(notes,list): raise ValueError("host-AI triage must include findingNotes for every scanner finding")
+    indexed = {item.get("findingIndex"):item for item in notes if isinstance(item,dict) and isinstance(item.get("findingIndex"),int)}
+    missing = [index for index in range(finding_count) if not isinstance(indexed.get(index,{}).get("note"),str) or not indexed[index]["note"].strip()]
+    if missing: raise ValueError(f"host-AI triage is missing detailed notes for finding indexes: {missing}")
+
 def render_report(root: Path, mode: str, report_id: str, generated: str, report: dict[str, Any]) -> str:
     lines = ["# Mnogovid Code Scanner Report", "", "## Overview", ""]
     lines += markdown_table(["Field","Value"], [["Report ID",report_id],["Workspace",root],["Mode",mode],["Generated at",generated]])
-    runs = scanner_results(report); findings = findings_from(report,runs)
+    runs = scanner_results(report); findings = findings_from(report,runs); ai_notes = host_ai_notes(report,len(findings))
     lines += ["## Scanner runs", ""]
     run_rows = []
     for run in runs:
@@ -194,10 +213,10 @@ def render_report(root: Path, mode: str, report_id: str, generated: str, report:
         lines += ["## Results by scanner", ""]
         adapters = list(dict.fromkeys([str(run.get("adapter") or "unknown") for run in runs] + [str(item.get("adapter") or "unknown") for item in findings]))
         for adapter in adapters:
-            scanner_findings = [item for item in findings if str(item.get("adapter") or "unknown") == adapter]
+            scanner_findings = [(index,item) for index,item in enumerate(findings) if str(item.get("adapter") or "unknown") == adapter]
             lines += [f"### {adapter}", ""]
-            rows = [vulnerability_row(item) for item in scanner_findings] or [["No vulnerabilities found.","—","—","—","—"]]
-            lines += markdown_table(["Vulnerability","Severity","Affected version","Fixed version","Lines / libraries"],rows)
+            rows = [vulnerability_row(item)+[ai_notes.get(index,{}).get("note")] for index,item in scanner_findings] or [["No vulnerabilities found.","—","—","—","—","—"]]
+            lines += markdown_table(["Vulnerability","Severity","Affected version","Fixed version","Lines / libraries","AI note"],rows)
     if findings:
         severity: dict[str,int] = {}
         for item in findings:
@@ -292,6 +311,7 @@ def call(name:str,args:dict[str,Any])->dict[str,Any]:
             root=workspace(args.get("workspace")); run_id=args.get("runId"); run=started_run(root,run_id); kind=args.get("kind"); entry=args.get("entry")
             if kind not in ("scanner","preview","skipped","host_ai_triage","agent_review") or not isinstance(entry,dict): raise ValueError("kind and entry are required")
             if kind in ("host_ai_triage","agent_review"):
+                if kind=="host_ai_triage": validate_host_ai_triage(run,entry)
                 key={"host_ai_triage":"hostAiTriage","agent_review":"agentReview"}[kind]
                 run[key]=redact(entry); save_run(root,str(run_id),run); return content({"runId":run_id,"recorded":kind,"entry":run[key]})
             key={"scanner":"scannerResults","preview":"virtualCommands","skipped":"skippedScanners"}[kind]
@@ -302,6 +322,7 @@ def call(name:str,args:dict[str,Any])->dict[str,Any]:
             host_ai=args.get("hostAiTriage",legacy_ai)
             if host_ai is not None:
                 if not isinstance(host_ai,dict): raise ValueError("hostAiTriage must be an object")
+                validate_host_ai_triage(run,host_ai)
                 run["hostAiTriage"]=redact(host_ai)
             if args.get("agentReview") is not None:
                 if not isinstance(args["agentReview"],dict): raise ValueError("agentReview must be an object")
@@ -340,7 +361,7 @@ def call(name:str,args:dict[str,Any])->dict[str,Any]:
         if name=="security_ai_triage_payload":
             items=redact(args.get("findings"));
             if not isinstance(items,list): raise ValueError("findings must be an array")
-            return content({"mode":"remediation" if args.get("remediation") else "triage","findingLimit":min(len(items),40),"findings":items[:40],"instruction":"Classify each finding as true_positive, false_positive, or needs_review; cite only supplied evidence. Propose patches only when remediation was explicitly requested."})
+            return content({"mode":"remediation" if args.get("remediation") else "triage","findingLimit":min(len(items),40),"findings":items[:40],"instruction":"Return a JSON object with findingNotes: one item for every supplied finding, in the same zero-based findingIndex order. Each item must include findingIndex, classification (true_positive, false_positive, or needs_review), confidence, and a detailed evidence-based note. Cite only supplied evidence. Propose patches only when remediation was explicitly requested."})
         raise ValueError(f"unknown tool: {name}")
     except (ValueError,OSError,subprocess.TimeoutExpired) as exc: return content({"error":str(exc)},True)
 
