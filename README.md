@@ -62,10 +62,8 @@ Then install **Mnogovid Code Scanner** from the marketplace.
 
 ### Claude Code
 
-```text
-/plugin marketplace add BergaBruh/mnogovid
-/plugin install mnogovid-code-scanner@mnogovid
-/reload-plugins
+```bash
+claude plugin marketplace add https://github.com/BergaBruh/mnogovid
 ```
 
 ### DeepSeek Harness
@@ -100,19 +98,6 @@ cordis.patch.yml                         DeepSeek Harness MCP bundle patch
 
 See the plugin’s [own README](plugins/mnogovid-code-scanner/README.md) for the
 scanner catalog, slash commands, adapter details, and implementation notes.
-
-## Releases
-
-Pushing a version tag that starts with `v` creates a GitHub Release
-automatically. Its title is `Версия: <tag>` and GitHub generates the release
-notes from changes since the previous release.
-
-```bash
-git tag -a v0.1.0 -m "Версия v0.1.0"
-git push origin v0.1.0
-```
-
-The workflow is [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
 ## License
 
