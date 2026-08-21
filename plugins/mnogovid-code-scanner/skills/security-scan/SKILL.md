@@ -45,5 +45,5 @@ contain host-model reasoning, AI triage, automatic remediation, or raw secrets.
 - Never execute a command outside the adapter allowlist or through a shell.
 - Do not treat `allowNetwork=true` as operating-system egress isolation.
 - Do not modify application source code, dependencies, or lockfiles.
-- Use `/security-scan-ai` or `/security-scan-agent` only when the user also
-  wants consent-gated model or agent analysis.
+- Use the `security-scan-ai` or `security-scan-agent` skills only when the
+  user also wants consent-gated model or agent analysis.

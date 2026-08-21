@@ -26,7 +26,7 @@ host's web-search tool for corroboration.
 
 | Host | Native entry point |
 | --- | --- |
-| Codex | `.codex-plugin/plugin.json` and `.mcp.json` |
+| Codex | `.codex-plugin/plugin.json` and `.mcp.json`; scan modes are skills |
 | Claude Code | `.claude-plugin/plugin.json` plus `claude-code.mcp.json.example` |
 | OpenCode | `opencode.json.example` merged into its configuration |
 | DeepSeek Harness | `package.json` bundle and `cordis.patch.yml` through first-party DSH MCP client |
@@ -87,18 +87,20 @@ installation command templates, and lists scanners missing from `PATH`.
 python3 /path/to/mnogovid-code-scanner/scripts/init.py /path/to/project --write --allow-network
 ```
 
-## Slash commands
+## Entry points by host
 
-- `/security-scan` — local scan only; never uses AI.
-- `/security-scan-ai` — local scan followed by host-AI analysis of redacted findings.
-- `/security-scan-agent` — the preceding workflow plus an independent review by the
-  `security-triage` agent.
+| Host | Local scan | AI analysis | Independent review |
+| --- | --- | --- | --- |
+| Codex | `security-scan` skill | `security-scan-ai` skill | `security-scan-agent` skill |
+| Claude Code | `/security-scan` | `/security-scan-ai` | `/security-scan-agent` |
+| OpenCode | `/security-scan` after copying the OpenCode command adapter | `/security-scan-ai` | `/security-scan-agent` |
 
-Every command operates on the current workspace. It asks separately for
+Every entry point operates on the current workspace. It asks separately for
 `--write`, `--allow-network`, and, where applicable, permission to share
-redacted findings with the host AI or the review agent.
+redacted findings with the host AI or the review agent. Codex does not expose
+the root `commands/` files as slash commands; it uses the corresponding skills.
 
-Each command stores its report without overwriting earlier results at
+Each scan stores its report without overwriting earlier results at
 `<project>/.mnogovid/code-scanner/<unixtime>/result.md`. Reports are rendered as Markdown with
 summary and per-scanner vulnerability tables plus a Mermaid severity chart.
 Each vulnerability table shows the issue, severity, affected version, fixed

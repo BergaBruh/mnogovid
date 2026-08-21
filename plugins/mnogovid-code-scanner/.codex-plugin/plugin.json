@@ -1,6 +1,6 @@
 {
   "name": "mnogovid-code-scanner",
-  "version": "0.1.0+codex.20260821150412",
+  "version": "0.1.0+codex.20260821152843",
   "description": "Standalone multi-scanner security orchestration for coding agents.",
   "author": {
     "name": "BergaBruh",
@@ -13,15 +13,14 @@
   "interface": {
     "displayName": "Mnogovid Code Scanner",
     "shortDescription": "Plan, run, ingest, and triage security scans.",
-    "longDescription": "Independent security plugin with agents, skills, commands, and an MCP server. It discovers a workspace, orchestrates allowlisted scanner CLIs, normalizes reports, and prepares redacted AI triage evidence.",
+    "longDescription": "Independent security plugin with skills, agents, and an MCP server. It discovers a workspace, orchestrates allowlisted scanner CLIs, normalizes reports, and prepares redacted AI triage evidence.",
     "developerName": "BergaBruh",
     "websiteURL": "https://github.com/BergaBruh/mnogovid",
     "category": "Productivity",
     "capabilities": [
       "mcp",
       "agents",
-      "skills",
-      "commands"
+      "skills"
     ],
     "defaultPrompt": "Plan a safe security scan for this workspace."
   },

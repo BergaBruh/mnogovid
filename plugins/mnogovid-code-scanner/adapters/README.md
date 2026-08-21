@@ -5,9 +5,9 @@ files are host-native entrypoints and must not be treated as interchangeable.
 
 | Host | Files | Activation |
 | --- | --- | --- |
-| Claude Code | `claude/agents/*.md` | The marketplace plugin currently uses compatible root agents; these files are the Claude-specific definitions for a host-specific release. |
-| Codex | `openai-codex/agents/*.md` | The Codex plugin currently uses compatible root agents; these files preserve a separately maintainable Codex definition. |
-| OpenCode | `opencode/.opencode/agents/*.md` | Copy `.opencode/agents/` into the target workspace after configuring the Mnogovid MCP server. |
+| Claude Code | `claude/agents/*.md`; root `commands/*.md` | The marketplace plugin uses compatible root agents and commands; these files are the Claude-specific definitions for a host-specific release. |
+| Codex | `openai-codex/agents/*.md`; root `skills/*/SKILL.md` | Codex exposes the three scan modes as skills, not slash commands. |
+| OpenCode | `opencode/.opencode/{agents,commands}/*.md` | Copy `.opencode/agents/` and `.opencode/commands/` into the target workspace after configuring the Mnogovid MCP server. |
 | DeepSeek Harness | `dsh/agent-presets/*/agent.cordis.yml` | Merge one persona row into a user-authored preset copied from a shipped DSH preset. |
 
 DSH presets are intentionally fragments: a preset needs the host's existing
