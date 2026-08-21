@@ -11,6 +11,11 @@ project, selects only relevant allowlisted scanners, obtains consent, executes
 approved commands without a shell, and leaves a reproducible report. It does
 not perform AI triage, advisory browsing, or code remediation.
 
+If the user explicitly authorizes the whole workspace, discover and plan the
+complete current workspace rather than a selected component. That scope consent
+does not waive approval for profile writing, network access, or each scanner
+process; standard scanner exclusions still apply.
+
 ## Required workflow
 
 1. Resolve and confirm the workspace path.

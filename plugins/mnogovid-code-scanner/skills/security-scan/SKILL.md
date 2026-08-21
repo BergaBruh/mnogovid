@@ -17,6 +17,17 @@ scanners from the plugin allowlist.
 - Optional permission for network-dependent scanners with `--allow-network`.
 - Explicit approval for every scanner process that will actually run.
 
+## Scope consent
+
+When the user explicitly authorizes scanning the whole project or workspace,
+discover and plan all relevant allowlisted scanners across the complete current
+workspace. Do not narrow that scope to selected components unless the user asks
+to do so. This scope consent is distinct from, and does not replace, approval
+for profile writing, network access, or every scanner process. Standard scanner
+exclusions still apply: `.git`, dependency/vendor directories, virtual
+environments, caches, build artifacts, and prior `.mnogovid` reports are not
+treated as project source.
+
 ## Workflow
 
 1. Ask separately about `--write` and `--allow-network`; a denied or unclear

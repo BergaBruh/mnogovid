@@ -48,8 +48,8 @@ TOOLS = [
  {"name":"security_run","description":"Execute one allowlisted scanner without a shell. Requires an explicit host-approved tool call; network-dependent scanners require allowNetwork=true.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"adapter":{"type":"string"},"allowNetwork":{"type":"boolean"}},"required":["workspace","adapter"],"additionalProperties":False}},
  {"name":"security_ingest","description":"Normalize an existing local JSON, JSON-lines, or SARIF report without executing any program.","inputSchema":{"type":"object","properties":{"report":{"type":"string"},"format":{"enum":["json","sarif"]},"adapter":{"type":"string"}},"required":["report","format"],"additionalProperties":False}},
  {"name":"security_start_run","description":"Create an in-memory, schema-owned scan lifecycle. Record only the user approvals supplied by the host; it does not execute or write anything.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"mode":{"enum":["scan","scan-ai","scan-agent"]},"consent":{"type":"object","properties":{"profileWrite":{"type":"boolean"},"network":{"type":"boolean"},"aiTriage":{"type":"boolean"},"agentReview":{"type":"boolean"}},"additionalProperties":False}},"required":["workspace","mode","consent"],"additionalProperties":False}},
- {"name":"security_record_run","description":"Append one completed scanner result, virtual preview, or skipped-scanner reason to a durable started scan lifecycle. It does not execute a process.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"runId":{"type":"string"},"kind":{"enum":["scanner","preview","skipped"]},"entry":{"type":"object"}},"required":["workspace","runId","kind","entry"],"additionalProperties":False}},
- {"name":"security_finalize_run","description":"Finalize a durable started scan lifecycle and store its schema-owned redacted Markdown report. The result is <workspace>/.mnogovid/code-scanner/<unixtime>/result.md.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"runId":{"type":"string"},"initialization":{"type":"object"},"doctor":{"type":"object"},"plan":{"type":"object"},"aiTriage":{"type":"object"},"agentReview":{"type":"object"}},"required":["workspace","runId"],"additionalProperties":False}},
+ {"name":"security_record_run","description":"Append scanner evidence, a preview, a skipped-scanner reason, host-AI triage, or independent agent review to a durable started scan lifecycle. It does not execute a process.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"runId":{"type":"string"},"kind":{"enum":["scanner","preview","skipped","host_ai_triage","agent_review"]},"entry":{"type":"object"}},"required":["workspace","runId","kind","entry"],"additionalProperties":False}},
+ {"name":"security_finalize_run","description":"Finalize a durable started scan lifecycle and store its schema-owned redacted Markdown report, including any recorded host-AI triage and independent agent review. The result is <workspace>/.mnogovid/code-scanner/<unixtime>/result.md.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"runId":{"type":"string"},"initialization":{"type":"object"},"doctor":{"type":"object"},"plan":{"type":"object"},"hostAiTriage":{"type":"object"},"aiTriage":{"type":"object"},"agentReview":{"type":"object"}},"required":["workspace","runId"],"additionalProperties":False}},
  {"name":"security_advisory_lookup","description":"Query the OSV vulnerability advisory website for one package version. It makes an HTTPS request only when allowNetwork=true.","inputSchema":{"type":"object","properties":{"ecosystem":{"type":"string"},"package":{"type":"string"},"version":{"type":"string"},"allowNetwork":{"type":"boolean"}},"required":["ecosystem","package","version"],"additionalProperties":False}},
  {"name":"security_ai_triage_payload","description":"Prepare bounded, secret-redacted findings for host-model AI triage. It does not contact any model or website itself.","inputSchema":{"type":"object","properties":{"findings":{"type":"array"},"remediation":{"type":"boolean"}},"required":["findings"],"additionalProperties":False}},
 ]
@@ -286,17 +286,32 @@ def call(name:str,args:dict[str,Any])->dict[str,Any]:
             root=workspace(args.get("workspace")); mode=args.get("mode"); consent=args.get("consent")
             if mode not in ("scan","scan-ai","scan-agent") or not isinstance(consent,dict): raise ValueError("mode and consent are required")
             run_id=str(time.time_ns())
-            RUNS[run_id]={"workspace":str(root),"mode":mode,"consent":redact(consent),"startedAt":datetime.now(timezone.utc).replace(microsecond=0).isoformat(),"scannerResults":[],"virtualCommands":[],"skippedScanners":[]}
+            RUNS[run_id]={"workspace":str(root),"mode":mode,"consent":redact(consent),"startedAt":datetime.now(timezone.utc).replace(microsecond=0).isoformat(),"scannerResults":[],"virtualCommands":[],"skippedScanners":[],"hostAiTriage":{"status":"pending" if consent.get("aiTriage") is True else "not_authorized"},"agentReview":{"status":"pending" if consent.get("agentReview") is True else "not_authorized"}}
             save_run(root,run_id,RUNS[run_id]); return content({"runId":run_id,"workspace":str(root),"statePath":str(state_path(root,run_id)),"mode":mode,"consent":RUNS[run_id]["consent"],"processStarted":False,"reportWritten":False})
         if name=="security_record_run":
             root=workspace(args.get("workspace")); run_id=args.get("runId"); run=started_run(root,run_id); kind=args.get("kind"); entry=args.get("entry")
-            if kind not in ("scanner","preview","skipped") or not isinstance(entry,dict): raise ValueError("kind and entry are required")
+            if kind not in ("scanner","preview","skipped","host_ai_triage","agent_review") or not isinstance(entry,dict): raise ValueError("kind and entry are required")
+            if kind in ("host_ai_triage","agent_review"):
+                key={"host_ai_triage":"hostAiTriage","agent_review":"agentReview"}[kind]
+                run[key]=redact(entry); save_run(root,str(run_id),run); return content({"runId":run_id,"recorded":kind,"entry":run[key]})
             key={"scanner":"scannerResults","preview":"virtualCommands","skipped":"skippedScanners"}[kind]
             run[key].append(redact(entry)); save_run(root,str(run_id),run); return content({"runId":run_id,"recorded":kind,"count":len(run[key])})
         if name=="security_finalize_run":
             root=workspace(args.get("workspace")); run_id=args.get("runId"); run=started_run(root,run_id)
+            legacy_ai=args.get("aiTriage")
+            host_ai=args.get("hostAiTriage",legacy_ai)
+            if host_ai is not None:
+                if not isinstance(host_ai,dict): raise ValueError("hostAiTriage must be an object")
+                run["hostAiTriage"]=redact(host_ai)
+            if args.get("agentReview") is not None:
+                if not isinstance(args["agentReview"],dict): raise ValueError("agentReview must be an object")
+                run["agentReview"]=redact(args["agentReview"])
+            if run["mode"] in ("scan-ai","scan-agent") and run["consent"].get("aiTriage") is True and run["hostAiTriage"].get("status")=="pending": raise ValueError("record host-AI triage before finalizing an approved AI scan")
+            if run["mode"]=="scan-agent" and run["consent"].get("agentReview") is True and run["agentReview"].get("status")=="pending": raise ValueError("record agent review before finalizing an approved agent scan")
             report={"runId":run_id,"startedAt":run["startedAt"],"consent":run["consent"],"scannerResults":run["scannerResults"],"virtualCommands":run["virtualCommands"],"skippedScanners":run["skippedScanners"]}
-            for key in ("initialization","doctor","plan","aiTriage","agentReview"):
+            if run["mode"] in ("scan-ai","scan-agent"): report["hostAiTriage"]=run["hostAiTriage"]
+            if run["mode"]=="scan-agent": report["agentReview"]=run["agentReview"]
+            for key in ("initialization","doctor","plan"):
                 value=args.get(key)
                 if value is not None:
                     if not isinstance(value,dict): raise ValueError(f"{key} must be an object")

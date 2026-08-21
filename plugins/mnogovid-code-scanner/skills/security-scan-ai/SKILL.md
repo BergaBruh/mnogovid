@@ -24,7 +24,10 @@ themselves never invoke an AI model.
    analyze its returned payload. Treat the model assessment as advisory:
    preserve scanner evidence and classify each finding as true positive, false
    positive, or needs review.
-5. Do not make web lookups or apply patches as part of this skill. Finalize
+5. Record that exact redacted assessment in the lifecycle with
+   `security_record_run` using kind `host_ai_triage`. The final report must use
+   the recorded assessment, not a reconstructed summary.
+6. Do not make web lookups or apply patches as part of this skill. Finalize
    the lifecycle once with the initialization, doctor, plan, and AI-triage
    evidence.
 
@@ -32,4 +35,6 @@ themselves never invoke an AI model.
 
 - Model analysis is never a substitute for scanner evidence or an advisory.
 - Share only the bounded, redacted payload prepared by the MCP server.
+- An approved AI scan cannot be finalized while its host-AI triage is still
+  unrecorded.
 - No project source, dependency, or lockfile is modified.

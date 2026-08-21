@@ -17,6 +17,13 @@ gate, not OS egress isolation. The plugin never calls an LLM itself: it creates
 a redacted, bounded payload so the host can request informed consent before
 sharing findings with an AI provider.
 
+The user may explicitly authorize a whole-workspace scan. That authorizes
+discovery and planning across the complete current project rather than a named
+subdirectory or a selected set of files. It does not bypass the separate
+approvals for profile writing, network access, or each scanner process, and it
+does not include scanner-standard excluded directories such as `.git`,
+`node_modules`, virtual environments, or previous `.mnogovid` reports.
+
 For web advisory checks, `security_advisory_lookup` queries OSV only after the
 caller sets `allowNetwork=true`; its response retains OSV references for human
 verification. NVD, vendor advisories, and other sites stay available to the
@@ -103,6 +110,9 @@ the root `commands/` files as slash commands; it uses the corresponding skills.
 Each scan stores its report without overwriting earlier results at
 `<project>/.mnogovid/code-scanner/<unixtime>/result.md`. Reports are rendered as Markdown with
 summary and per-scanner vulnerability tables plus a Mermaid severity chart.
+AI and agent modes also include the exact recorded `Host AI triage` and
+`Independent agent review` sections; an approved stage cannot be finalized
+without its corresponding recorded result.
 Each vulnerability table shows the issue, severity, affected version, fixed
 version, and responsible file lines or libraries. Raw JSON is not written to
 `result.md`.

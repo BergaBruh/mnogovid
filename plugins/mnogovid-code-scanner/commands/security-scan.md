@@ -5,6 +5,11 @@ description: Run local security scanners without any AI analysis
 Scan the current workspace only. Never invoke an AI model, AI-triage payload,
 the `security-triage` agent, web advisory lookup, or an external web search.
 
+When the user explicitly authorizes the whole workspace, discover and plan all
+relevant allowlisted scanners across it rather than narrowing the scan to a
+selected component. This does not waive the separate confirmations below or
+include standard scanner-excluded directories.
+
 Before taking any action, ask separately in chat:
 
 1. “Create the local `.mnogovid-code-scanner.json` profile with `--write`? Without approval, inspect only.”
