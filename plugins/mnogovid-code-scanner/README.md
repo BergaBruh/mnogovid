@@ -1,120 +1,189 @@
 # Mnogovid Code Scanner
 
-An autonomous, dependency-free security orchestration plugin
+Mnogovid Code Scanner runs approved local security tools, turns their output
+into a readable Markdown report, and can add an evidence-bound AI explanation
+or an independent agent review. It does not install scanners, change project
+files, or apply fixes.
 
-## Components
+## Install and run
 
-- MCP server: catalog, doctor, plan, virtual run, direct run, report ingest
-  and Markdown storage, OSV advisory lookup, and redacted AI-triage payload.
-- Agents: scanner orchestration and evidence-first finding triage.
-- Skills and commands: safe multi-scanner workflows and AI/web advisory triage.
+All hosts need Python 3 and the scanner executables you want to use on `PATH`.
+Run the initialization command in [Initialize a project profile manually](#initialize-a-project-profile-manually)
+first to see the available and missing scanners. It never installs tools or
+starts a scan.
+
+Choose the section for your agent host. The scan modes and consent policy are
+the same everywhere; only installation and invocation differ.
+
+### Codex
+
+Install from the marketplace that contains the plugin:
+
+```bash
+codex plugin add mnogovid-code-scanner@<marketplace-name>
+```
+
+Open a new Codex task after installation. Codex uses skills, not slash
+commands, so state the desired mode in a normal message:
+
+```text
+Run security-scan for the whole current workspace. Do not write a profile and do not use the network.
+```
+
+```text
+Run security-scan-ai for the whole current workspace. Ask before sending redacted findings to AI.
+```
+
+```text
+Run security-scan-agent for the whole current workspace. Ask separately before AI analysis and independent agent review.
+```
+
+The plugin then discovers the project, previews each scanner command, and asks
+for approval before every real scanner process starts.
+
+### Claude Code
+
+Install the plugin from your configured Claude Code marketplace. Its
+`.claude-plugin/plugin.json` and bundled MCP configuration provide the plugin
+entry point. Start Claude in the target project:
+
+```bash
+cd /path/to/project
+claude
+```
+
+Then invoke one of the plugin's slash commands:
+
+```text
+/security-scan
+/security-scan-ai
+/security-scan-agent
+```
+
+### OpenCode
+
+Merge [`opencode.json.example`](opencode.json.example) into the project
+`opencode.json`, replacing `/absolute/path/to/mnogovid-code-scanner` with the
+real plugin path. Then copy the adapters into the project's `.opencode/`
+directory:
+
+```bash
+mkdir -p /path/to/project/.opencode
+cp -R /path/to/mnogovid-code-scanner/adapters/opencode/.opencode/agents /path/to/project/.opencode/
+cp -R /path/to/mnogovid-code-scanner/adapters/opencode/.opencode/commands /path/to/project/.opencode/
+```
+
+Restart OpenCode and run:
+
+```text
+/security-scan
+/security-scan-ai
+/security-scan-agent
+```
+
+### DeepSeek Harness
+
+Use the supplied `package.json` bundle and merge exactly one matching persona
+fragment from `adapters/dsh/agent-presets/*/agent.cordis.yml` into a
+user-authored DSH preset. Start a new session with that preset, then request
+the selected mode in natural language, for example: “Run a local security scan
+of the whole workspace without AI analysis.”
+
+## Choose a mode
+
+| Mode | Use it when | Result |
+| --- | --- | --- |
+| `security-scan` | You need reproducible local scanner evidence only. | Scanner findings and coverage report. |
+| `security-scan-ai` | You also want an AI explanation of every finding. | Local evidence plus an AI note for each finding. |
+| `security-scan-agent` | You need a second, independent assessment. | AI notes plus an independent security-triage review. |
+
+The AI and agent are reviewers, not vulnerability scanners. Scanner evidence
+remains the source of record.
+
+## Scope and consent
+
+Say “scan the whole workspace” to authorize discovery and planning across the
+entire current project. The normal scanner exclusions still apply: `.git`,
+dependency/vendor directories, virtual environments, caches, build artifacts,
+and previous `.mnogovid` reports.
+
+Each permission is independent:
+
+| Permission | What it allows |
+| --- | --- |
+| `--write` | Create `.mnogovid-code-scanner.json`; no existing profile is replaced without `--force`. |
+| `--allow-network` | Run a network-dependent scanner after it is separately approved. It is a policy gate, not network isolation. |
+| Per-scanner approval | Start one specific scanner process after its command preview. |
+| AI sharing | Send only a bounded, redacted findings payload to the host AI. |
+| Agent review | Give the same bounded evidence and recorded AI triage to `security-triage`. |
+
+No permission implies another. A whole-workspace authorization does not permit
+network access, profile writing, or scanner execution by itself.
+
+## Report
+
+Every scan writes a new report to:
+
+```text
+<project>/.mnogovid/code-scanner/<timestamp>/result.md
+```
+
+The report is reader-first:
+
+1. **Verdict** — whether action or human review is needed and whether scan
+   coverage is incomplete.
+2. **What needs attention** — one item per finding with scanner, location,
+   severity, AI assessment, and a detailed explanation.
+3. **Scan coverage** — completed, incomplete, and failed scanners.
+4. **Coverage gaps** — a concrete recovery step and a short redacted
+   diagnostic when a scanner did not produce usable output.
+
+For AI and agent modes, every scanner finding must have a detailed AI note.
+The report cannot finalize with an approved but unrecorded AI or agent stage.
+
+## Initialize a project profile manually
+
+Initialization only discovers the project and checks which scanner executables
+are available; it does not run a scan, install software, or use the network.
+
+```bash
+python3 /path/to/mnogovid-code-scanner/scripts/init.py /path/to/project --json
+```
+
+To create the optional local profile and record that network scanners may be
+considered later:
+
+```bash
+python3 /path/to/mnogovid-code-scanner/scripts/init.py /path/to/project --json --write --allow-network
+```
+
+The command prints missing executables and package-manager installation
+templates. It never installs them. Replacing an existing profile requires both
+`--write --force`.
+
+## Develop and update the Codex plugin
+
+After changing this local plugin, validate it and update the cachebuster:
+
+```bash
+python3 /path/to/plugin-creator/scripts/validate_plugin.py /path/to/mnogovid-code-scanner
+python3 /path/to/plugin-creator/scripts/update_plugin_cachebuster.py /path/to/mnogovid-code-scanner
+```
+
+Publish the updated marketplace source, then reinstall the plugin:
+
+```bash
+codex plugin add mnogovid-code-scanner@<marketplace-name>
+```
+
+Start a new Codex task after reinstalling so the updated skills and MCP tools
+are loaded.
 
 ## Safety model
 
 Only allowlisted scanner executables run, always as an argv array without a
-shell. Network-dependent scanners require `allowNetwork=true`; this is a policy
-gate, not OS egress isolation. The plugin never calls an LLM itself: it creates
-a redacted, bounded payload so the host can request informed consent before
-sharing findings with an AI provider.
-
-The user may explicitly authorize a whole-workspace scan. That authorizes
-discovery and planning across the complete current project rather than a named
-subdirectory or a selected set of files. It does not bypass the separate
-approvals for profile writing, network access, or each scanner process, and it
-does not include scanner-standard excluded directories such as `.git`,
-`node_modules`, virtual environments, or previous `.mnogovid` reports.
-
-For web advisory checks, `security_advisory_lookup` queries OSV only after the
-caller sets `allowNetwork=true`; its response retains OSV references for human
-verification. NVD, vendor advisories, and other sites stay available to the
-host's web-search tool for corroboration.
-
-## Host integration
-
-| Host | Native entry point |
-| --- | --- |
-| Codex | `.codex-plugin/plugin.json` and `.mcp.json`; scan modes are skills |
-| Claude Code | `.claude-plugin/plugin.json` plus `claude-code.mcp.json.example` |
-| OpenCode | `opencode.json.example` merged into its configuration |
-| DeepSeek Harness | `package.json` bundle and `cordis.patch.yml` through first-party DSH MCP client |
-
-The plugin root contains common `agents/`, `skills/`, and `commands/` assets;
-each host receives the same scanner policy and MCP tool surface.
-
-## Skills and agents
-
-| Component | Purpose | Output | Cannot do |
-| --- | --- | --- | --- |
-| `security-scan` skill | Consent-gated local scanner workflow: discovery, preview, execution, and report storage. | A redacted Markdown report with scanner status, per-scanner vulnerability tables, and a severity graph. | Use AI, modify code, install tools, or bypass scanner approval. |
-| `security-triage` skill | Evidence-led classification and advisory/version validation of existing findings. | Classification, confidence, evidence sources, and reviewable remediation proposals. | Run scans, make unapproved network requests, or patch the project. |
-| `security-orchestrator` agent | Executes the local scan boundary used by `/security-scan`. | `<workspace>/.mnogovid/code-scanner/<unixtime>/result.md` plus skipped-scanner reasons. | Use AI or advisory lookups; it only orchestrates approved local scans. |
-| `security-triage` agent | Independently reviews scanner evidence and any approved host-AI triage. | A distinct `agentReview` section for `/security-scan-agent`. | Alter code, install packages, or treat model output as verified evidence. |
-
-All components preserve the same consent boundary: profile writing, network
-access, each scanner run, host-AI sharing, and independent agent review are
-separate decisions.
-
-## Host-specific agent adapters
-
-The canonical behavior lives in `agents/`, while separately maintained host
-definitions live in `adapters/`:
-
-- `adapters/claude/agents/` for Claude Code agent Markdown.
-- `adapters/openai-codex/agents/` for Codex agent Markdown.
-- `adapters/opencode/.opencode/agents/` for OpenCode subagents. Copy this
-  `.opencode/agents/` directory into the target workspace after configuring
-  the Mnogovid MCP server.
-- `adapters/dsh/agent-presets/` for DeepSeek Harness scoped persona rows. Merge
-  one into a user preset copied from a shipped DSH preset; do not mount it in
-  the host composition.
-
-## License
+shell. AI receives only the redacted payload produced by the MCP server. OSV
+advisory lookup requires separate network approval. The plugin never performs
+automatic remediation.
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
-
-## Project initialization
-
-Check the scanners relevant to a project without modifying it:
-
-```bash
-python3 /path/to/mnogovid-code-scanner/scripts/init.py /path/to/project
-```
-
-To add the missing local project profile, use `--write`. The script creates
-only `.mnogovid-code-scanner.json` and never replaces an existing file unless both
-`--write --force` are specified. Add `--allow-network` only to record a
-preference for network-dependent scanners; initialization itself does not make
-network requests, install programs, or run a scan.
-
-The initialization result includes an “If you want to add more tools” section.
-It detects package managers available on the current system, shows their
-installation command templates, and lists scanners missing from `PATH`.
-
-```bash
-python3 /path/to/mnogovid-code-scanner/scripts/init.py /path/to/project --write --allow-network
-```
-
-## Entry points by host
-
-| Host | Local scan | AI analysis | Independent review |
-| --- | --- | --- | --- |
-| Codex | `security-scan` skill | `security-scan-ai` skill | `security-scan-agent` skill |
-| Claude Code | `/security-scan` | `/security-scan-ai` | `/security-scan-agent` |
-| OpenCode | `/security-scan` after copying the OpenCode command adapter | `/security-scan-ai` | `/security-scan-agent` |
-
-Every entry point operates on the current workspace. It asks separately for
-`--write`, `--allow-network`, and, where applicable, permission to share
-redacted findings with the host AI or the review agent. Codex does not expose
-the root `commands/` files as slash commands; it uses the corresponding skills.
-
-Each scan stores its report without overwriting earlier results at
-`<project>/.mnogovid/code-scanner/<unixtime>/result.md`. Reports are rendered as Markdown with
-summary and per-scanner vulnerability tables plus a Mermaid severity chart.
-AI and agent modes also include the exact recorded `Host AI triage` and
-`Independent agent review` sections; an approved stage cannot be finalized
-without its corresponding recorded result. For every scanner finding in either
-mode, the results table also includes the detailed, evidence-based AI note that
-matches its zero-based finding index.
-Each vulnerability table shows the issue, severity, affected version, fixed
-version, and responsible file lines or libraries. Raw JSON is not written to
-`result.md`.
