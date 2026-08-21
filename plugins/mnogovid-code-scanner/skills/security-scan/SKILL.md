@@ -13,7 +13,7 @@ scanners from the plugin allowlist.
 ## Inputs
 
 - The current workspace as an absolute directory path.
-- Optional permission to create `.mnogovid-security.json` with `--write`.
+- Optional permission to create `.mnogovid-code-scanner.json` with `--write`.
 - Optional permission for network-dependent scanners with `--allow-network`.
 - Explicit approval for every scanner process that will actually run.
 

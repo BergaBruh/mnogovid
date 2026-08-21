@@ -1,6 +1,6 @@
 # Local scan artifacts and resumable lifecycle state
 .mnogovid/
-.mnogovid-security.json
+.mnogovid-code-scanner.json
 
 # Secrets and machine-local configuration
 .env

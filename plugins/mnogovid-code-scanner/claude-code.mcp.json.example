@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "mnogovid-security": {
+    "mnogovid-code-scanner": {
       "command": "python3",
       "args": ["./scripts/security_mcp.py"],
       "cwd": "${CLAUDE_PLUGIN_ROOT}"

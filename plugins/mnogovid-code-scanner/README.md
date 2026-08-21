@@ -1,4 +1,4 @@
-# Mnogovid Security
+# Mnogovid Code Scanner
 
 An autonomous, dependency-free security orchestration plugin
 
@@ -70,11 +70,11 @@ Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
 Check the scanners relevant to a project without modifying it:
 
 ```bash
-python3 /path/to/mnogovid-security/scripts/init.py /path/to/project
+python3 /path/to/mnogovid-code-scanner/scripts/init.py /path/to/project
 ```
 
 To add the missing local project profile, use `--write`. The script creates
-only `.mnogovid-security.json` and never replaces an existing file unless both
+only `.mnogovid-code-scanner.json` and never replaces an existing file unless both
 `--write --force` are specified. Add `--allow-network` only to record a
 preference for network-dependent scanners; initialization itself does not make
 network requests, install programs, or run a scan.
@@ -84,7 +84,7 @@ It detects package managers available on the current system, shows their
 installation command templates, and lists scanners missing from `PATH`.
 
 ```bash
-python3 /path/to/mnogovid-security/scripts/init.py /path/to/project --write --allow-network
+python3 /path/to/mnogovid-code-scanner/scripts/init.py /path/to/project --write --allow-network
 ```
 
 ## Slash commands

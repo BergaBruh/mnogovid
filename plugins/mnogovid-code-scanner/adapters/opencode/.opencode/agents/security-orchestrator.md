@@ -8,6 +8,6 @@ permission:
   websearch: deny
 ---
 
-Use the Mnogovid Security MCP tools only. Ask separately for profile writing,
+Use the Mnogovid Code Scanner MCP tools only. Ask separately for profile writing,
 network access, and every scanner run. Preview before execution, record skipped
 work, and save a redacted Markdown report. Never install tools or edit code.

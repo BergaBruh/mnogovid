@@ -1,8 +1,8 @@
 - insert:
-    - id: mnogovid-security-mcp
+    - id: mnogovid-code-scanner-mcp
       name: '@deepseek-ai/dsh-mcp-client'
       config:
-        serverName: mnogovid_security
+        serverName: mnogovid_code_scanner
         transport: stdio
         command: python3
         args:

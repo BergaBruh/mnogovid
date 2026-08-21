@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Initialize a non-destructive Mnogovid Security project profile.
+"""Initialize a non-destructive Mnogovid Code Scanner project profile.
 
 The script only inspects the target directory by default.  Pass ``--write`` to
-create the missing ``.mnogovid-security.json`` profile; an existing profile is
+create the missing ``.mnogovid-code-scanner.json`` profile; an existing profile is
 never changed unless ``--force`` is supplied as well.  ``--allow-network`` is
 recorded as a preference for later scanner runs and never opens a connection.
 """
@@ -19,7 +19,7 @@ from pathlib import Path
 from security_mcp import ADAPTERS, discover, recommend
 
 
-PROFILE_NAME = ".mnogovid-security.json"
+PROFILE_NAME = ".mnogovid-code-scanner.json"
 PACKAGE_MANAGER_HINTS = (
     ("apt", "apt-get", "sudo apt-get install <package>"),
     ("dnf", "dnf", "sudo dnf install <package>"),
@@ -82,7 +82,7 @@ def build_result(project: Path) -> dict[str, object]:
 def profile(result: dict[str, object], allow_network: bool) -> dict[str, object]:
     return {
         "schemaVersion": 1,
-        "generatedBy": "mnogovid-security init",
+        "generatedBy": "mnogovid-code-scanner init",
         "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "recommendedAdapters": [item["adapter"] for item in result["checks"]],
         "availableAdapters": result["availableAdapters"],

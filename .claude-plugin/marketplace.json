@@ -1,13 +1,13 @@
 {
-  "name": "mnogovid-security",
+  "name": "mnogovid",
   "owner": {
     "name": "BergaBruh"
   },
   "description": "Security scanning plugins with local, AI-assisted, and independent-agent triage modes.",
   "plugins": [
     {
-      "name": "mnogovid-security",
-      "source": "./plugins/mnogovid-security",
+      "name": "mnogovid-code-scanner",
+      "source": "./plugins/mnogovid-code-scanner",
       "description": "Multi-scanner security orchestration with optional AI and independent-agent triage."
     }
   ]

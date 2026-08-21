@@ -180,7 +180,7 @@ def vulnerability_row(finding: dict[str, Any]) -> list[Any]:
     ]
 
 def render_report(root: Path, mode: str, report_id: str, generated: str, report: dict[str, Any]) -> str:
-    lines = ["# Mnogovid Security Report", "", "## Overview", ""]
+    lines = ["# Mnogovid Code Scanner Report", "", "## Overview", ""]
     lines += markdown_table(["Field","Value"], [["Report ID",report_id],["Workspace",root],["Mode",mode],["Generated at",generated]])
     runs = scanner_results(report); findings = findings_from(report,runs)
     lines += ["## Scanner runs", ""]
@@ -333,7 +333,7 @@ def main()->int:
     for line in sys.stdin:
         try:
             req=json.loads(line); method=req.get("method"); rid=req.get("id")
-            if method=="initialize": out={"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"mnogovid-security","version":"0.1.0"}}
+            if method=="initialize": out={"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"mnogovid-code-scanner","version":"0.1.0"}}
             elif method=="tools/list": out={"tools":TOOLS}
             elif method=="tools/call": out=call(req.get("params",{}).get("name",""),req.get("params",{}).get("arguments",{}))
             elif rid is None: continue

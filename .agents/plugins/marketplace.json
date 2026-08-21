@@ -1,14 +1,14 @@
 {
-  "name": "mnogovid-security-marketplace",
+  "name": "mnogovid",
   "interface": {
-    "displayName": "Mnogovid Security Marketplace"
+    "displayName": "Mnogovid Marketplace"
   },
   "plugins": [
     {
-      "name": "mnogovid-security",
+      "name": "mnogovid-code-scanner",
       "source": {
         "source": "local",
-        "path": "./plugins/mnogovid-security"
+        "path": "./plugins/mnogovid-code-scanner"
       },
       "policy": {
         "installation": "AVAILABLE",

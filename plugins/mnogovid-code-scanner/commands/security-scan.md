@@ -7,7 +7,7 @@ the `security-triage` agent, web advisory lookup, or an external web search.
 
 Before taking any action, ask separately in chat:
 
-1. “Create the local `.mnogovid-security.json` profile with `--write`? Without approval, inspect only.”
+1. “Create the local `.mnogovid-code-scanner.json` profile with `--write`? Without approval, inspect only.”
 2. “Allow network-dependent scanners with `--allow-network`? Initialization itself does not use the network; each scanner still needs separate approval.”
 
 Treat any answer other than an unambiguous yes as denial. Resolve the current

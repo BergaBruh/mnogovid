@@ -1,6 +1,6 @@
-# Mnogovid Security Marketplace
+# Mnogovid Marketplace
 
-This repository is the public distribution point for Mnogovid Security plugins.
+This repository is the public distribution point for Mnogovid plugins.
 It contains marketplace catalogs for Codex and Claude Code, a Git-installable
 DeepSeek Harness bundle, and host-specific OpenCode configuration assets.
 
@@ -12,12 +12,12 @@ installed plugin and remain consent-gated.
 
 | Plugin | Status | What it provides | Primary users |
 | --- | --- | --- | --- |
-| `mnogovid-security` | Available | Local multi-scanner security workflow, report storage, optional AI triage, and independent-agent review. | Codex, Claude Code, DeepSeek Harness, and OpenCode users. |
+| `mnogovid-code-scanner` | Available | Local multi-scanner security workflow, report storage, optional AI triage, and independent-agent review. | Codex, Claude Code, DeepSeek Harness, and OpenCode users. |
 
 The Codex catalog is defined in [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json); the Claude Code catalog is in
 [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json).
 
-## What `mnogovid-security` does
+## What `mnogovid-code-scanner` does
 
 The plugin discovers a workspace, selects relevant allowlisted scanner CLIs,
 previews commands, and runs only the scanners the user explicitly approves.
@@ -40,7 +40,7 @@ Every completed workflow produces a redacted Markdown report at:
 The following are independent decisions. A yes to one never implies a yes to
 another:
 
-1. Create or update `.mnogovid-security.json` with `--write`.
+1. Create or update `.mnogovid-code-scanner.json` with `--write`.
 2. Permit network-dependent scanners with `--allow-network`.
 3. Run each scanner process.
 4. Share bounded, redacted findings with the host AI.
@@ -58,13 +58,13 @@ redact secret-like fields before they are written.
 codex plugin marketplace add https://github.com/BergaBruh/mnogovid
 ```
 
-Then install **Mnogovid Security** from the marketplace.
+Then install **Mnogovid Code Scanner** from the marketplace.
 
 ### Claude Code
 
 ```text
 /plugin marketplace add BergaBruh/mnogovid
-/plugin install mnogovid-security@mnogovid-security
+/plugin install mnogovid-code-scanner@mnogovid
 /reload-plugins
 ```
 
@@ -81,11 +81,11 @@ dsh plugin --profile web add github:BergaBruh/mnogovid#<commit-sha>
 
 OpenCode uses an MCP configuration rather than this marketplace format. Clone
 this repository, merge
-`plugins/mnogovid-security/opencode.json.example` into the OpenCode config,
-and set `cwd` to the absolute path of `plugins/mnogovid-security`.
+`plugins/mnogovid-code-scanner/opencode.json.example` into the OpenCode config,
+and set `cwd` to the absolute path of `plugins/mnogovid-code-scanner`.
 
 To use the native OpenCode agent adapters, also copy
-`plugins/mnogovid-security/adapters/opencode/.opencode/agents/` into the
+`plugins/mnogovid-code-scanner/adapters/opencode/.opencode/agents/` into the
 target workspace’s `.opencode/agents/` directory.
 
 ## Repository layout
@@ -93,12 +93,12 @@ target workspace’s `.opencode/agents/` directory.
 ```text
 .agents/plugins/marketplace.json        Codex marketplace catalog
 .claude-plugin/marketplace.json         Claude Code marketplace catalog
-plugins/mnogovid-security/              Installable plugin
-plugins/mnogovid-security/adapters/     Host-specific agent definitions
+plugins/mnogovid-code-scanner/          Installable plugin
+plugins/mnogovid-code-scanner/adapters/ Host-specific agent definitions
 cordis.patch.yml                         DeepSeek Harness MCP bundle patch
 ```
 
-See the plugin’s [own README](plugins/mnogovid-security/README.md) for the
+See the plugin’s [own README](plugins/mnogovid-code-scanner/README.md) for the
 scanner catalog, slash commands, adapter details, and implementation notes.
 
 ## Releases
@@ -116,5 +116,5 @@ The workflow is [`.github/workflows/release.yml`](.github/workflows/release.yml)
 
 ## License
 
-`mnogovid-security` is licensed under Apache-2.0; see
-[plugins/mnogovid-security/LICENSE](plugins/mnogovid-security/LICENSE).
+`mnogovid-code-scanner` is licensed under Apache-2.0; see
+[plugins/mnogovid-code-scanner/LICENSE](plugins/mnogovid-code-scanner/LICENSE).

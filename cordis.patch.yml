@@ -1,11 +1,11 @@
 - insert:
-    - id: mnogovid-security-mcp
+    - id: mnogovid-code-scanner-mcp
       name: '@deepseek-ai/dsh-mcp-client'
       config:
-        serverName: mnogovid_security
+        serverName: mnogovid_code_scanner
         transport: stdio
         command: python3
         args:
-          - '${DSH_PLUGIN_DIR}/plugins/mnogovid-security/scripts/security_mcp.py'
+          - '${DSH_PLUGIN_DIR}/plugins/mnogovid-code-scanner/scripts/security_mcp.py'
         toolCallTimeoutMs: 300000
         failOnStartupError: true
