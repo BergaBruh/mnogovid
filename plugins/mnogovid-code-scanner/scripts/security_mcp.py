@@ -179,6 +179,19 @@ def vulnerability_row(finding: dict[str, Any]) -> list[Any]:
         finding_location_or_library(finding),
     ]
 
+def finding_title(finding: dict[str, Any]) -> str:
+    identifier = finding_value(finding,("ruleId","id","cve","advisory","testId"))
+    title = finding_value(finding,("title","vulnerability","issueText","message"))
+    if identifier and title: return f"{identifier}: {title}"
+    return str(title or identifier or "Scanner finding")
+
+def scan_verdict(findings: list[dict[str, Any]], notes: dict[int, dict[str, Any]]) -> tuple[str,str]:
+    if not findings: return ("No scanner findings", "No findings were reported by completed scanners. This is not proof that the project has no vulnerabilities.")
+    classifications = [str(note.get("classification","")).lower() for note in notes.values()]
+    if any(value=="true_positive" for value in classifications): return ("Action required", "At least one scanner finding was assessed as a likely real vulnerability.")
+    if any(value=="needs_review" for value in classifications) or not notes: return ("Review required", "Scanner findings need human verification before they are treated as vulnerabilities or dismissed.")
+    return ("No confirmed vulnerabilities", "The recorded AI assessment did not confirm the scanner findings; retain the evidence for review.")
+
 def host_ai_notes(report: dict[str, Any], finding_count: int) -> dict[int, dict[str, Any]]:
     triage = report.get("hostAiTriage")
     items = triage.get("findingNotes") if isinstance(triage,dict) else None
@@ -199,38 +212,37 @@ def validate_host_ai_triage(run: dict[str, Any], entry: dict[str, Any]) -> None:
     if missing: raise ValueError(f"host-AI triage is missing detailed notes for finding indexes: {missing}")
 
 def render_report(root: Path, mode: str, report_id: str, generated: str, report: dict[str, Any]) -> str:
-    lines = ["# Mnogovid Code Scanner Report", "", "## Overview", ""]
-    lines += markdown_table(["Field","Value"], [["Report ID",report_id],["Workspace",root],["Mode",mode],["Generated at",generated]])
+    lines = ["# Security scan report", ""]
     runs = scanner_results(report); findings = findings_from(report,runs); ai_notes = host_ai_notes(report,len(findings))
-    lines += ["## Scanner runs", ""]
-    run_rows = []
+    completed = [run for run in runs if run.get("resultStatus")=="complete"]
+    failed = [run for run in runs if run.get("resultStatus")=="failed"]
+    verdict, explanation = scan_verdict(findings,ai_notes)
+    lines += ["## Verdict", "", f"**{verdict}.** {explanation}", ""]
+    lines += markdown_table(["Workspace","Mode","Findings","Completed scanners","Failed scanners"], [[root,mode,len(findings),len(completed),len(failed)]])
+    if failed:
+        lines += ["**Coverage gap:** " + ", ".join(str(run.get("adapter") or "unknown") for run in failed) + " did not complete. Their result is unavailable and should not be interpreted as a clean check.", ""]
+    lines += ["## What needs attention", ""]
+    if not findings:
+        lines += ["No scanner findings were reported. Review failed or skipped scanners before treating this as a clean result.", ""]
+    for index,finding in enumerate(findings):
+        note = ai_notes.get(index,{})
+        lines += [f"### {index + 1}. {finding_title(finding)}", ""]
+        lines += [f"**Scanner:** {finding.get('adapter') or 'unknown'}  ", f"**Severity:** {finding_value(finding,('severity','level','risk')) or 'not provided'}  ", f"**Location:** {finding_location_or_library(finding)}", ""]
+        if note:
+            lines += [f"**AI assessment:** {note.get('classification','needs_review')} (confidence: {note.get('confidence','not provided')})  ", f"**Why it matters:** {note.get('note','No detailed AI note was recorded.')}", ""]
+        elif mode in ("scan-ai","scan-agent"):
+            lines += ["**AI assessment:** not recorded — this report is incomplete and should not have been finalized.", ""]
+        else:
+            lines += ["**Next step:** inspect the surrounding code and decide whether this scanner finding is exploitable or a false positive.", ""]
+    lines += ["## Scan coverage", ""]
+    coverage_rows=[]
     for run in runs:
-        count = (run.get("counts") or {}).get("findings")
-        if count is None: count = len(run.get("findings",[])) if isinstance(run.get("findings"),list) else 0
-        run_rows.append([run.get("adapter"),run.get("resultStatus"),count,run.get("exitCode"),run.get("requiresNetwork")])
-    lines += markdown_table(["Scanner","Status","Findings","Exit code","Network"],run_rows)
-    if runs or findings:
-        lines += ["## Results by scanner", ""]
-        adapters = list(dict.fromkeys([str(run.get("adapter") or "unknown") for run in runs] + [str(item.get("adapter") or "unknown") for item in findings]))
-        for adapter in adapters:
-            scanner_findings = [(index,item) for index,item in enumerate(findings) if str(item.get("adapter") or "unknown") == adapter]
-            lines += [f"### {adapter}", ""]
-            rows = [vulnerability_row(item)+[ai_notes.get(index,{}).get("note")] for index,item in scanner_findings] or [["No vulnerabilities found.","—","—","—","—","—"]]
-            lines += markdown_table(["Vulnerability","Severity","Affected version","Fixed version","Lines / libraries","AI note"],rows)
-    if findings:
-        severity: dict[str,int] = {}
-        for item in findings:
-            label = str(item.get("severity") or "UNKNOWN").upper().replace('"', "'")
-            severity[label] = severity.get(label,0) + 1
-        lines += ["## Findings by severity", "", "```mermaid", "pie showData", "    title Findings by severity"]
-        lines += [f'    "{label}" : {count}' for label,count in sorted(severity.items())]
-        lines += ["```", ""]
-    else: lines += ["## Findings", "", "No findings were recorded.", ""]
-    reserved = {"scannerResults","results","findings","hostAiTriage","agentReview"}
-    for key,value in report.items():
-        if key not in reserved: lines += markdown_value(str(key),value)
-    if "hostAiTriage" in report: lines += markdown_value("Host AI triage",report["hostAiTriage"])
-    if "agentReview" in report: lines += markdown_value("Independent agent review",report["agentReview"])
+        count=(run.get("counts") or {}).get("findings")
+        if count is None: count=len(run.get("findings",[])) if isinstance(run.get("findings"),list) else 0
+        coverage_rows.append([run.get("adapter"),run.get("resultStatus"),count,"network" if run.get("requiresNetwork") else "local"])
+    lines += markdown_table(["Scanner","Result","Findings","Access"],coverage_rows)
+    lines += ["## Report details", ""]
+    lines += markdown_table(["Report ID", "Generated", "AI analysis", "Independent review"], [[report_id,generated,"included" if "hostAiTriage" in report else "not requested","included" if "agentReview" in report else "not requested"]])
     return "\n".join(lines).rstrip() + "\n"
 
 def write_report(root: Path, mode: str, report: dict[str, Any]) -> dict[str, Any]:
@@ -271,6 +283,9 @@ def parse_report(value: Any, adapter: str|None=None) -> list[dict[str,Any]]:
             for result in run.get("results",[]) or []:
                 loc=((result.get("locations") or [{}])[0].get("physicalLocation") or {})
                 findings.append({"adapter":adapter,"ruleId":result.get("ruleId"),"severity":((result.get("level") or "unknown").upper()),"title":result.get("message",{}).get("text","") if isinstance(result.get("message"),dict) else "","location":loc.get("artifactLocation",{}).get("uri"),"line":(loc.get("region",{}) or {}).get("startLine")})
+    elif adapter=="bandit" and isinstance(value,dict) and isinstance(value.get("results"),list):
+        for result in value["results"][:200]:
+            if isinstance(result,dict): findings.append({"adapter":adapter,"ruleId":result.get("test_id"),"severity":result.get("issue_severity"),"confidence":result.get("issue_confidence"),"title":result.get("issue_text"),"location":result.get("filename"),"line":result.get("line_number")})
     elif isinstance(value,dict) and isinstance(value.get("results"),list):
         for result in value["results"][:200]: findings.append({"adapter":adapter,"ruleId":result.get("check_id") or result.get("rule_id"),"severity":result.get("extra",{}).get("severity") if isinstance(result.get("extra"),dict) else None,"title":result.get("extra",{}).get("message","") if isinstance(result.get("extra"),dict) else str(result)[:300],"location":result.get("path"),"line":result.get("start",{}).get("line") if isinstance(result.get("start"),dict) else None})
     elif isinstance(value,list):
