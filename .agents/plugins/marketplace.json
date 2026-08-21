@@ -1,0 +1,20 @@
+{
+  "name": "mnogovid-security-marketplace",
+  "interface": {
+    "displayName": "Mnogovid Security Marketplace"
+  },
+  "plugins": [
+    {
+      "name": "mnogovid-security",
+      "source": {
+        "source": "local",
+        "path": "./plugins/mnogovid-security"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

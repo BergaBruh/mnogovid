@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mnogovid-security": {
+      "type": "local",
+      "command": ["python3", "./scripts/security_mcp.py"],
+      "cwd": "/absolute/path/to/mnogovid-security",
+      "enabled": true,
+      "timeout": 10000
+    }
+  },
+  "permission": {
+    "mnogovid-security_*": "ask"
+  }
+}

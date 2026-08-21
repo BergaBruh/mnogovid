@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mnogovid-security": {
+      "command": "python3",
+      "args": ["./scripts/security_mcp.py"],
+      "cwd": "${CLAUDE_PLUGIN_ROOT}"
+    }
+  }
+}
