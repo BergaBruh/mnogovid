@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "system_mcp.py"
+INIT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "init.py"
+SPEC = importlib.util.spec_from_file_location("system_mcp", MODULE_PATH)
+assert SPEC and SPEC.loader
+system_mcp = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(system_mcp)
+
+
+def payload(result: dict) -> dict:
+    return json.loads(result["content"][0]["text"])
+
+
+class SystemMcpTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = self.temp.name
+
+    def tearDown(self) -> None:
+        system_mcp.RUNS.clear()
+        self.temp.cleanup()
+
+    def test_plan_is_non_executing(self) -> None:
+        value = payload(system_mcp.call("system_plan", {"reportDirectory": self.root}))
+        self.assertFalse(value["processStarted"])
+        self.assertTrue(value["runs"])
+        self.assertIn("host", value)
+
+    def test_virtual_listener_preview_never_starts_process(self) -> None:
+        value = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "listeners"}))
+        self.assertFalse(value["processStarted"])
+        self.assertEqual(value["execution"], "virtual")
+        self.assertEqual(value["command"]["argv"][-1], "-lntup")
+
+    def test_active_scan_requires_authorized_literal_ip(self) -> None:
+        result = system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "nmap-local", "target": "localhost"})
+        self.assertTrue(result["isError"])
+        self.assertIn("literal IP", payload(result)["error"])
+        result = system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "nmap-local", "target": "127.0.0.1"})
+        self.assertTrue(result["isError"])
+        self.assertIn("authorizedTarget", payload(result)["error"])
+
+    def test_traffic_preview_is_bounded(self) -> None:
+        result = system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "tshark-summary", "interface": "eth0", "durationSeconds": 301})
+        self.assertTrue(result["isError"])
+        self.assertIn("5 through 300", payload(result)["error"])
+        value = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "tshark-summary", "interface": "eth0", "durationSeconds": 30}))
+        self.assertTrue(value["requiresTrafficCapture"])
+        self.assertIn("duration:30", value["command"]["argv"])
+
+    def test_inventory_is_not_automatically_a_security_finding(self) -> None:
+        findings, observations = system_mcp.normalize_output("listeners", "tcp LISTEN 0 4096 127.0.0.1:8080\n")
+        self.assertEqual(findings, [])
+        self.assertEqual(observations, ["tcp LISTEN 0 4096 127.0.0.1:8080"])
+        findings, observations = system_mcp.normalize_output("clamav", "/tmp/example: Eicar-Test-Signature FOUND\n")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(observations, [])
+
+    def test_lifecycle_writes_redacted_report_without_scanning(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {"profileWrite": False, "activeNetwork": False, "trafficCapture": False, "aiTriage": False, "agentReview": False}}))
+        run_id = started["runId"]
+        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "listeners"}))
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "preview", "entry": preview})
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "skipped", "entry": {"adapter": "clamav", "reason": "not approved"}})
+        final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
+        report = Path(final["path"])
+        self.assertTrue(report.is_file())
+        self.assertIn("clamav", report.read_text(encoding="utf-8"))
+
+    def test_lifecycle_refuses_symlinked_report_root(self) -> None:
+        outside = Path(self.root) / "outside"
+        outside.mkdir()
+        (Path(self.root) / ".mnogovid").symlink_to(outside, target_is_directory=True)
+        result = system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {}})
+        self.assertTrue(result["isError"])
+        self.assertIn("symlink", payload(result)["error"])
+
+    def test_lifecycle_refuses_replaced_state_symlink(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {}}))
+        state = Path(started["statePath"])
+        state.unlink()
+        state.symlink_to(Path(self.root) / "outside")
+        result = system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": started["runId"], "kind": "skipped", "entry": {"adapter": "clamav", "reason": "not approved"}})
+        self.assertTrue(result["isError"])
+        self.assertIn("symlink", payload(result)["error"])
+
+    def test_active_network_execution_needs_lifecycle_consent(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {"activeNetwork": False}}))
+        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "nmap-local", "target": "127.0.0.1", "authorizedTarget": True}))
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": started["runId"], "kind": "preview", "entry": preview})
+        result = system_mcp.call("system_run", {"reportDirectory": self.root, "runId": started["runId"], "adapter": "nmap-local", "target": "127.0.0.1", "authorizedTarget": True})
+        self.assertTrue(result["isError"])
+        self.assertIn("consent", payload(result)["error"])
+
+    def test_init_refuses_a_symlinked_profile(self) -> None:
+        profile = Path(self.root) / ".mnogovid-system-scanner.json"
+        profile.symlink_to(Path(self.root) / "outside-profile")
+        completed = subprocess.run([sys.executable, str(INIT_PATH), self.root, "--write", "--json"], capture_output=True, text=True, check=False)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("symlinked profile", completed.stderr)
+
+    def test_ingest_normalizes_sarif_without_starting_a_process(self) -> None:
+        report = Path(self.root) / "report.sarif"
+        report.write_text(json.dumps({"runs": [{"results": [{"ruleId": "CVE-2026-0001", "level": "error", "message": {"text": "vulnerable package"}, "locations": [{"physicalLocation": {"artifactLocation": {"uri": "/usr/bin/example"}, "region": {"startLine": 3}}}]}]}]}), encoding="utf-8")
+        result = payload(system_mcp.call("system_ingest", {"reportDirectory": self.root, "report": str(report), "format": "sarif", "adapter": "imported"}))
+        self.assertTrue(result["reportOnly"])
+        self.assertEqual(result["counts"]["findings"], 1)
+        self.assertEqual(result["findings"][0]["ruleId"], "CVE-2026-0001")
+
+    def test_ingest_refuses_external_or_symlinked_report(self) -> None:
+        external = Path(self.root).parent / "external-report.json"
+        external.write_text("[]", encoding="utf-8")
+        result = system_mcp.call("system_ingest", {"reportDirectory": self.root, "report": str(external), "format": "json"})
+        self.assertTrue(result["isError"])
+        self.assertIn("inside reportDirectory", payload(result)["error"])
+        linked = Path(self.root) / "linked.json"
+        linked.symlink_to(external)
+        result = system_mcp.call("system_ingest", {"reportDirectory": self.root, "report": str(linked), "format": "json"})
+        self.assertTrue(result["isError"])
+        self.assertIn("symlink", payload(result)["error"])
+        linked.unlink()
+        external.unlink()
+
+    def test_advisory_lookup_requires_network_consent(self) -> None:
+        result = system_mcp.call("system_advisory_lookup", {"ecosystem": "Debian", "package": "openssl", "version": "1.0", "allowNetwork": False})
+        self.assertTrue(result["isError"])
+        self.assertIn("allowNetwork", payload(result)["error"])
+
+    def test_catalog_exposes_ingest_and_advisory_workflows(self) -> None:
+        catalog = payload(system_mcp.call("system_catalog", {}))
+        names = {item["id"] for item in catalog["adapters"]}
+        self.assertIn("journal-warnings", names)
+        tools = {item["name"] for item in system_mcp.TOOLS}
+        self.assertTrue({"system_ingest", "system_advisory_lookup"}.issubset(tools))
+
+    def test_cross_surface_assets_exist(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        for relative in ("claude-code.mcp.json.example", "opencode.json.example", "cordis.patch.yml", "adapters/openai-codex/agents/system-orchestrator.md", "adapters/claude/agents/system-triage.md", "adapters/opencode/.opencode/commands/system-scan.md", "adapters/dsh/agent-presets/system-triage/agent.cordis.yml"):
+            self.assertTrue((root / relative).is_file(), relative)
+
+    def test_report_has_reader_first_sections_and_recovery_gap(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {}}))
+        run_id = started["runId"]
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "skipped", "entry": {"adapter": "aide", "reason": "scanner executable missing"}})
+        final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
+        document = Path(final["path"]).read_text(encoding="utf-8")
+        self.assertIn("## What needs attention", document)
+        self.assertIn("## Coverage gaps", document)
+        self.assertIn("## Scan coverage", document)
+        self.assertIn("## Report details", document)
+
+    def test_recommendation_is_distribution_aware(self) -> None:
+        recommended = system_mcp.recommend_host({"packageManagers": ["apt-get"], "containerRuntimes": ["docker"]})
+        self.assertIn("debsecan", recommended)
+        self.assertNotIn("rpm-verify", recommended)
+        self.assertIn("docker-containers", recommended)
+
+    def test_reader_first_report_renders_structured_finding_and_ai_note(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan-ai", "consent": {"aiTriage": True}}))
+        run_id = started["runId"]
+        scanner = {"adapter": "listeners", "command": {"argv": ["ss", "-H", "-lntup"], "currentDir": self.root}, "resultStatus": "complete", "exitCode": 0, "findings": [{"severity": "high", "title": "unexpected listener", "location": "0.0.0.0:9000"}], "observations": []}
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "scanner", "entry": scanner})
+        triage = {"findingNotes": [{"findingIndex": 0, "classification": "needs_review", "confidence": 0.8, "note": "Verify service ownership."}]}
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "host_ai_triage", "entry": triage})
+        final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
+        document = Path(final["path"]).read_text(encoding="utf-8")
+        self.assertIn("unexpected listener", document)
+        self.assertIn("0.0.0.0:9000", document)
+        self.assertIn("Verify service ownership.", document)
+
+
+if __name__ == "__main__":
+    unittest.main()

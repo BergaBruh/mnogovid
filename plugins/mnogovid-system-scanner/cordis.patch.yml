@@ -1,0 +1,11 @@
+- insert:
+    - id: mnogovid-system-scanner-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: mnogovid_system_scanner
+        transport: stdio
+        command: python3
+        args:
+          - '${DSH_PLUGIN_DIR}/scripts/system_mcp.py'
+        toolCallTimeoutMs: 300000
+        failOnStartupError: true

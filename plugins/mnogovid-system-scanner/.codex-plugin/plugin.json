@@ -1,0 +1,28 @@
+{
+  "name": "mnogovid-system-scanner",
+  "version": "0.1.0+codex.20260825084025",
+  "description": "Consent-gated Linux host security assessment and network observation.",
+  "author": {
+    "name": "BergaBruh",
+    "url": "https://github.com/BergaBruh"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/BergaBruh/mnogovid",
+  "repository": "https://github.com/BergaBruh/mnogovid",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Mnogovid System Scanner",
+    "shortDescription": "Plan, run, and triage consent-gated Linux host checks.",
+    "longDescription": "A standalone MCP plugin that inventories Linux host security, runs allowlisted local scanners only after explicit consent, and records redacted evidence. It supports passive network observation and explicitly authorized port scans.",
+    "developerName": "BergaBruh",
+    "websiteURL": "https://github.com/BergaBruh/mnogovid",
+    "category": "Productivity",
+    "capabilities": [
+      "mcp",
+      "agents",
+      "skills"
+    ],
+    "defaultPrompt": "Plan a safe, report-only security assessment of this Linux host."
+  },
+  "mcpServers": "./.mcp.json"
+}

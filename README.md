@@ -13,11 +13,12 @@ installed plugin and remain consent-gated.
 | Plugin | Status | What it provides | Primary users |
 | --- | --- | --- | --- |
 | `mnogovid-code-scanner` | Available | Local multi-scanner security workflow, report storage, optional AI triage, and independent-agent review. | Codex, Claude Code, DeepSeek Harness, and OpenCode users. |
+| `mnogovid-system-scanner` | Available | Consent-gated Linux host assessment: hardening, malware/rootkits, integrity, packages, persistence, ports/firewall, and bounded traffic observation. | Codex and Claude Code users. |
 
 The Codex catalog is defined in [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json); the Claude Code catalog is in
 [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json).
 
-## What `mnogovid-code-scanner` does
+## What the scanners do
 
 The plugin discovers a workspace, selects relevant allowlisted scanner CLIs,
 previews commands, and runs only the scanners the user explicitly approves.
@@ -25,6 +26,15 @@ Every completed workflow produces a redacted Markdown report at:
 
 ```text
 <project>/.mnogovid/code-scanner/<unixtime>/result.md
+```
+
+`mnogovid-system-scanner` is the corresponding host-level plugin. It uses an
+explicitly selected, private report directory; previews every fixed argv; and
+requires separate approvals for each scanner, active probing of one authorized
+IP, and bounded packet-metadata capture. Its report path is:
+
+```text
+<report-directory>/.mnogovid/system-scanner/<unixtime>/result.md
 ```
 
 | Component | Responsibility | Explicitly does not do |
@@ -45,6 +55,10 @@ another:
 3. Run each scanner process.
 4. Share bounded, redacted findings with the host AI.
 5. Request an independent agent review.
+
+For the system scanner, active port scanning and traffic capture are additional
+independent consents. It never installs a tool, invokes `sudo`, applies a fix,
+or writes a packet-capture file.
 
 Scanner commands use an allowlist and argv execution without a shell. Network
 permission is a policy gate, not operating-system egress isolation. Reports
@@ -93,13 +107,15 @@ target workspace’s `.opencode/agents/` directory.
 .claude-plugin/marketplace.json         Claude Code marketplace catalog
 plugins/mnogovid-code-scanner/          Installable plugin
 plugins/mnogovid-code-scanner/adapters/ Host-specific agent definitions
+plugins/mnogovid-system-scanner/         Installable Linux host-scanning plugin
 cordis.patch.yml                         DeepSeek Harness MCP bundle patch
 ```
 
-See the plugin’s [own README](plugins/mnogovid-code-scanner/README.md) for the
-scanner catalog, slash commands, adapter details, and implementation notes.
+See the plugins’ READMEs for their scanner catalogs and implementation notes:
+[code scanner](plugins/mnogovid-code-scanner/README.md) and
+[system scanner](plugins/mnogovid-system-scanner/README.md).
 
 ## License
 
-`mnogovid-code-scanner` is licensed under Apache-2.0; see
-[plugins/mnogovid-code-scanner/LICENSE](plugins/mnogovid-code-scanner/LICENSE).
+Both bundled plugins are licensed under Apache-2.0; see their respective
+[`LICENSE`](plugins/mnogovid-code-scanner/LICENSE) files.
