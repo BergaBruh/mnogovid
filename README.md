@@ -1,8 +1,8 @@
 # Mnogovid Marketplace
 
 This repository is the public distribution point for Mnogovid plugins.
-It contains marketplace catalogs for Codex and Claude Code, a Git-installable
-DeepSeek Harness bundle, and host-specific OpenCode configuration assets.
+It contains marketplace catalogs for Codex and Claude Code and host-specific
+OpenCode configuration assets.
 
 The marketplace itself is only a catalog: it does not scan repositories, send
 data to an AI model, or install scanner programs. Those actions belong to the
@@ -12,7 +12,7 @@ installed plugin and remain consent-gated.
 
 | Plugin | Status | What it provides | Primary users |
 | --- | --- | --- | --- |
-| `mnogovid-code-scanner` | Available | Local multi-scanner security workflow, report storage, optional AI triage, and independent-agent review. | Codex, Claude Code, DeepSeek Harness, and OpenCode users. |
+| `mnogovid-code-scanner` | Available | Local multi-scanner security workflow, report storage, optional AI triage, and independent-agent review. | Codex, Claude Code, and OpenCode users. |
 | `mnogovid-system-scanner` | Available | Consent-gated Linux host assessment: hardening, malware/rootkits, integrity, packages, persistence, ports/firewall, and bounded traffic observation. | Codex and Claude Code users. |
 
 The Codex catalog is defined in [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json); the Claude Code catalog is in
@@ -80,15 +80,6 @@ Then install **Mnogovid Code Scanner** from the marketplace.
 claude plugin marketplace add https://github.com/BergaBruh/mnogovid
 ```
 
-### DeepSeek Harness
-
-Install a pinned Git revision into the desired profile, then restart that
-profile:
-
-```bash
-dsh plugin --profile web add github:BergaBruh/mnogovid#<commit-sha>
-```
-
 ### OpenCode
 
 OpenCode uses an MCP configuration rather than this marketplace format. Clone
@@ -108,7 +99,6 @@ target workspace’s `.opencode/agents/` directory.
 plugins/mnogovid-code-scanner/          Installable plugin
 plugins/mnogovid-code-scanner/adapters/ Host-specific agent definitions
 plugins/mnogovid-system-scanner/         Installable Linux host-scanning plugin
-cordis.patch.yml                         DeepSeek Harness MCP bundle patch
 ```
 
 See the plugins’ READMEs for their scanner catalogs and implementation notes:

@@ -193,7 +193,7 @@ class SystemMcpTests(unittest.TestCase):
 
     def test_cross_surface_assets_exist(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        for relative in ("claude-code.mcp.json.example", "opencode.json.example", "cordis.patch.yml", "remote-mcp.toml.example", "commands/system-scan.md", "adapters/openai-codex/agents/system-orchestrator.md", "adapters/claude/agents/system-triage.md", "adapters/opencode/.opencode/commands/system-scan.md", "adapters/dsh/agent-presets/system-triage/agent.cordis.yml"):
+        for relative in ("claude-code.mcp.json.example", "opencode.json.example", "remote-mcp.toml.example", "commands/system-scan.md", "adapters/openai-codex/agents/system-orchestrator.md", "adapters/claude/agents/system-triage.md", "adapters/opencode/.opencode/commands/system-scan.md"):
             self.assertTrue((root / relative).is_file(), relative)
 
     def test_remote_mcp_config_is_static_and_alias_bound(self) -> None:

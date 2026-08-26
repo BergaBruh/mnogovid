@@ -73,14 +73,6 @@ Restart OpenCode and run:
 /security-scan
 ```
 
-### DeepSeek Harness
-
-Use the supplied `package.json` bundle and merge exactly one matching persona
-fragment from `adapters/dsh/agent-presets/*/agent.cordis.yml` into a
-user-authored DSH preset. Start a new session with that preset, then request
-the selected mode in natural language, for example: “Run a local security scan
-of the whole workspace without AI analysis.”
-
 ## Choose a mode
 
 | Mode | Use it when | Result |

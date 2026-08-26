@@ -8,13 +8,5 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/BergaBruh/mnogovid.git"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  },
-  "dependencies": {
-    "@deepseek-ai/dsh-mcp-client": "0.0.1-rc.1"
   }
 }

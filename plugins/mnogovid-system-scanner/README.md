@@ -98,13 +98,6 @@ cp -R /path/to/mnogovid-system-scanner/adapters/opencode/.opencode/agents /safe/
 cp -R /path/to/mnogovid-system-scanner/adapters/opencode/.opencode/commands /safe/report-directory/.opencode/
 ```
 
-### DeepSeek Harness
-
-Use the supplied `package.json` and merge exactly one persona fragment from
-`adapters/dsh/agent-presets/*/agent.cordis.yml` into a user-authored DSH
-preset. The supplied `cordis.patch.yml` starts the local MCP server; it does
-not authorize scanners or alter the host.
-
 First inspect the host/tool availability without starting a scanner:
 
 ```bash

@@ -6,8 +6,6 @@ agent surface. They do not contain scanner binaries or bypass the MCP server:
 - `openai-codex/` — Codex-oriented agent definitions.
 - `claude/` — Claude Code-oriented agent definitions.
 - `opencode/` — OpenCode command and agent assets.
-- `dsh/` — DeepSeek Harness agent preset fragments.
-
 Every surface must retain the separate approvals for profile writing, active
 network probing, traffic capture, each scanner command, host-AI sharing, and
 independent review.

@@ -1,6 +1,6 @@
 {
   "name": "mnogovid-code-scanner",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Standalone multi-scanner security orchestration for coding agents.",
   "author": {
     "name": "BergaBruh",
