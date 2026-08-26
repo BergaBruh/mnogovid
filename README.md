@@ -12,11 +12,26 @@ installed plugin and remain consent-gated.
 
 | Plugin | Status | What it provides | Primary users |
 | --- | --- | --- | --- |
-| `mnogovid-code-scanner` | Available | Local multi-scanner security workflow, report storage, optional AI triage, and independent-agent review. | Codex, Claude Code, and OpenCode users. |
-| `mnogovid-system-scanner` | Available | Consent-gated Linux host assessment: hardening, malware/rootkits, integrity, packages, persistence, ports/firewall, and bounded traffic observation. | Codex and Claude Code users. |
+| `mnogovid-code-scanner` | Available | Workspace SAST, secrets, dependency, SBOM, and IaC assessment. | Codex, Claude Code, and OpenCode users. |
+| `mnogovid-system-scanner` | Available | Linux host, container, service, port, firewall, and traffic assessment. | Codex, Claude Code, and OpenCode users. |
 
 The Codex catalog is defined in [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json); the Claude Code catalog is in
 [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json).
+
+## First run and later runs
+
+Both plugins have one unified workflow. In Codex, mention the plugin or run
+its command:
+
+```text
+@mnogovid-code-scanner
+@mnogovid-system-scanner
+```
+
+On first use, the workflow checks its profile and installed adapters, then asks
+before creating a missing profile. On later use, it validates that profile and
+the available toolchain before asking for an analysis mode: adapters only,
+adapters plus AI triage, or adapters plus AI triage and independent review.
 
 ## What the scanners do
 
@@ -50,15 +65,16 @@ IP, and bounded packet-metadata capture. Its report path is:
 The following are independent decisions. A yes to one never implies a yes to
 another:
 
-1. Create or update `.mnogovid-code-scanner.json` with `--write`.
-2. Permit network-dependent scanners with `--allow-network`.
-3. Run each scanner process.
+1. Create a missing scanner profile.
+2. Permit network-dependent scanners or advisory lookups.
+3. Run each scanner process after its exact preview.
 4. Share bounded, redacted findings with the host AI.
 5. Request an independent agent review.
 
-For the system scanner, active port scanning and traffic capture are additional
-independent consents. It never installs a tool, invokes `sudo`, applies a fix,
-or writes a packet-capture file.
+For the system scanner, active port scanning, local service probes, image
+scanner databases, and traffic capture are additional independent consents. It
+never installs a tool, invokes `sudo`, applies a fix, or writes a packet-capture
+file.
 
 Scanner commands use an allowlist and argv execution without a shell. Network
 permission is a policy gate, not operating-system egress isolation. Reports
@@ -72,7 +88,7 @@ redact secret-like fields before they are written.
 codex plugin marketplace add https://github.com/BergaBruh/mnogovid
 ```
 
-Then install **Mnogovid Code Scanner** from the marketplace.
+Then install the scanner plugin you need and start a new Codex task.
 
 ### Claude Code
 
@@ -83,13 +99,13 @@ claude plugin marketplace add https://github.com/BergaBruh/mnogovid
 ### OpenCode
 
 OpenCode uses an MCP configuration rather than this marketplace format. Clone
-this repository, merge
-`plugins/mnogovid-code-scanner/opencode.json.example` into the OpenCode config,
-and set `cwd` to the absolute path of `plugins/mnogovid-code-scanner`.
+this repository and merge one or both `opencode.json.example` files into the
+project config, setting each `cwd` to the matching absolute plugin path.
 
-To use the native OpenCode agent adapters, also copy
-`plugins/mnogovid-code-scanner/adapters/opencode/.opencode/agents/` into the
-target workspace’s `.opencode/agents/` directory.
+To use native OpenCode agents and commands, copy both `agents/` and `commands/`
+from each plugin's `adapters/opencode/.opencode/` directory into the target
+workspace’s `.opencode/`, then restart OpenCode. Both MCP servers and all four
+agents were smoke-tested against OpenCode locally.
 
 ## Repository layout
 

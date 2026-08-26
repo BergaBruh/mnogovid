@@ -7,10 +7,9 @@ files, or apply fixes.
 
 ## Install and run
 
-All hosts need Python 3 and the scanner executables you want to use on `PATH`.
-Run the initialization command in [Initialize a project profile manually](#initialize-a-project-profile-manually)
-first to see the available and missing scanners. It never installs tools or
-starts a scan.
+All hosts need Python 3 and the scanner executables they intend to run on
+`PATH`. The normal entrypoint bootstraps the profile and toolchain itself; the
+manual initializer below is only for inspection outside an agent session.
 
 Choose the section for your agent host. The scan modes and consent policy are
 the same everywhere; only installation and invocation differ.
@@ -77,7 +76,9 @@ Restart OpenCode and run:
 
 | Mode | Use it when | Result |
 | --- | --- | --- |
-| One `security-scan` workflow | You choose adapters only, AI triage, or AI triage plus independent review after bootstrap. | One consent-gated evidence lifecycle. |
+| Adapters only | You need reproducible scanner evidence. | Findings and coverage report. |
+| Adapters + AI triage | You want bounded, redacted AI classification. | Scanner evidence plus AI notes. |
+| Adapters + AI triage + independent review | You need a second assessment. | Scanner evidence, AI notes, and review. |
 
 The AI and agent are reviewers, not vulnerability scanners. Scanner evidence
 remains the source of record.
@@ -93,9 +94,9 @@ Each permission is independent:
 
 | Permission | What it allows |
 | --- | --- |
-| `--write` | Create `.mnogovid-code-scanner.json`; no existing profile is replaced without `--force`. |
-| `--allow-network` | Run a network-dependent scanner after it is separately approved. It is a policy gate, not network isolation. |
-| Per-scanner approval | Start one specific scanner process after its command preview. |
+| Profile creation | Create a missing `.mnogovid-code-scanner.json`; an invalid profile stops the workflow. |
+| Network consent | Run a network-dependent scanner after it is separately approved. It is a policy gate, not network isolation. |
+| Per-scanner approval | Start one specific scanner process after its command preview and recorded lifecycle `runId`. |
 | AI sharing | Send only a bounded, redacted findings payload to the host AI. |
 | Agent review | Give the same bounded evidence and recorded AI triage to `security-triage`. |
 
@@ -140,16 +141,17 @@ python3 /path/to/mnogovid-code-scanner/scripts/init.py /path/to/project --json -
 ```
 
 The command prints missing executables and package-manager installation
-templates. It never installs them. Replacing an existing profile requires both
-`--write --force`.
+templates. It never installs them. The unified workflow is preferred because it
+also validates the existing profile and binds every execution to a recorded
+preview.
 
 ## Develop and update the Codex plugin
 
-After changing this local plugin, validate it and update the cachebuster:
+After changing this local plugin, validate it and bump its normal semantic
+version before publishing:
 
 ```bash
 python3 /path/to/plugin-creator/scripts/validate_plugin.py /path/to/mnogovid-code-scanner
-python3 /path/to/plugin-creator/scripts/update_plugin_cachebuster.py /path/to/mnogovid-code-scanner
 ```
 
 Publish the updated marketplace source, then reinstall the plugin:
@@ -160,6 +162,19 @@ codex plugin add mnogovid-code-scanner@<marketplace-name>
 
 Start a new Codex task after reinstalling so the updated skills and MCP tools
 are loaded.
+
+## Troubleshooting
+
+- **Profile missing:** rerun the unified workflow and approve profile creation.
+- **Profile invalid:** do not scan; inspect or deliberately replace it through
+  the manual initializer.
+- **Adapter missing:** install it through normal system administration, then
+  restart the workflow; the plugin never installs tools.
+- **MCP not visible:** reinstall/update the plugin and start a new Codex or
+  Claude Code session. In OpenCode, confirm `opencode mcp list` shows it as
+  connected after merging the example config.
+- **No findings:** this is not proof that the workspace is secure; review
+  skipped and failed adapters first.
 
 ## Safety model
 

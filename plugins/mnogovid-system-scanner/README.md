@@ -98,13 +98,17 @@ cp -R /path/to/mnogovid-system-scanner/adapters/opencode/.opencode/agents /safe/
 cp -R /path/to/mnogovid-system-scanner/adapters/opencode/.opencode/commands /safe/report-directory/.opencode/
 ```
 
+Restart OpenCode, verify `opencode mcp list` reports the system scanner as
+connected, then run `/system-scan`.
+
 First inspect the host/tool availability without starting a scanner:
 
 ```bash
 python3 /path/to/mnogovid-system-scanner/scripts/init.py /safe/report-directory --json
 ```
 
-The optional profile is separate from execution consent:
+This manual initializer is optional; the unified workflow uses `system_bootstrap`
+first. A profile records discovery only and never grants scanner permission:
 
 ```bash
 python3 /path/to/mnogovid-system-scanner/scripts/init.py /safe/report-directory --json --write
@@ -115,13 +119,18 @@ additional controls are deliberately separate:
 
 - Image scanners with external vulnerability databases require `network`
   consent, an image reference, and per-scanner approval.
-- `nmap-local` needs `--allow-active-network`, `authorizedTarget=true`, and one
-  explicitly authorized literal IP.
+- `nmap-local` needs recorded lifecycle active-network consent,
+  `authorizedTarget=true`, and one explicitly authorized literal IP.
 - Database clients require `serviceProbe` consent and use only fixed local,
   read-only status commands. Their raw output is withheld after normalization.
-- `tshark-summary` needs `--allow-traffic-capture`, a named interface, and a
-  5–300 second capture interval. It emits metadata to the scanner result only,
-  not a PCAP file; packet metadata can still be sensitive.
+- `tshark-summary` needs recorded lifecycle traffic-capture consent, a named
+  interface, and a 5–300 second capture interval. It emits metadata to the
+  scanner result only, not a PCAP file; packet metadata can still be sensitive.
+
+The database adapters use fixed local read-only status/version commands. They
+can be unavailable when a service is not local, its socket is inaccessible, or
+it requires credentials; such a result is a coverage gap, not a clean bill of
+health.
 
 Reports are written only after `system_finalize_run`:
 
@@ -157,3 +166,16 @@ python3 -m unittest discover -s /path/to/mnogovid-system-scanner/tests -v
 ```
 
 Licensed under the Apache License 2.0.
+
+## Troubleshooting
+
+- **Profile missing:** rerun the unified workflow and approve profile creation.
+- **Profile invalid:** stop and repair it explicitly; the workflow will not
+  scan through an invalid profile.
+- **Adapter missing or permission denied:** install or grant the required
+  read-only access through normal system administration, then rerun bootstrap.
+- **Remote MCP unavailable:** verify the SSH alias, known host key, remote
+  Python path, and remote plugin path; the generator does not contact the
+  server or modify `~/.codex/config.toml`.
+- **No findings:** a completed set of checks cannot prove the absence of
+  compromise, unseen traffic, or kernel-level stealth. Review coverage gaps.
