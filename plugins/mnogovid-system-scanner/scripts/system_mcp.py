@@ -52,8 +52,19 @@ ADAPTERS: dict[str, dict[str, Any]] = {
     "journal-warnings": {"category": "logs", "exe": "journalctl", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("--no-pager", "--since", "24 hours ago", "--priority", "warning", "--output", "short-iso", "--lines", "1000")},
     "kernel-modules": {"category": "kernel", "exe": "lsmod", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed()},
     "docker-containers": {"category": "containers", "exe": "docker", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("ps", "--all", "--no-trunc", "--format", "{{json .}}")},
+    "docker-security-options": {"category": "container-hardening", "exe": "docker", "network": False, "traffic": False, "sensitiveOutput": True, "timeout": 60, "argv": lambda _: _fixed("info", "--format", "{{json .SecurityOptions}}")},
+    "docker-inspect": {"category": "container-hardening", "exe": "docker", "network": False, "traffic": False, "sensitiveOutput": True, "timeout": 60, "argv": lambda args: _docker_inspect_args(args)},
     "podman-containers": {"category": "containers", "exe": "podman", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("ps", "--all", "--no-trunc", "--format", "json")},
     "debsums": {"category": "integrity", "exe": "debsums", "network": False, "traffic": False, "timeout": 1800, "argv": lambda _: _fixed("--changed")},
+    "nginx-config": {"category": "web-hardening", "exe": "nginx", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("-t")},
+    "mysql-status": {"category": "database-posture", "exe": "mysqladmin", "network": False, "traffic": False, "serviceProbe": True, "sensitiveOutput": True, "timeout": 15, "argv": lambda _: _fixed("--protocol=socket", "--connect-timeout=3", "status")},
+    "postgres-status": {"category": "database-posture", "exe": "pg_isready", "network": False, "traffic": False, "serviceProbe": True, "sensitiveOutput": True, "timeout": 15, "argv": lambda _: _fixed("--timeout=3")},
+    "redis-info": {"category": "database-posture", "exe": "redis-cli", "network": False, "traffic": False, "serviceProbe": True, "sensitiveOutput": True, "timeout": 15, "argv": lambda _: _fixed("--no-auth-warning", "INFO", "server")},
+    "mongodb-status": {"category": "database-posture", "exe": "mongosh", "network": False, "traffic": False, "serviceProbe": True, "sensitiveOutput": True, "timeout": 15, "argv": lambda _: _fixed("--quiet", "--eval", "JSON.stringify(db.serverStatus({uptime:1,connections:1,security:1,transportSecurity:1}))")},
+    "clickhouse-version": {"category": "database-posture", "exe": "clickhouse-client", "network": False, "traffic": False, "serviceProbe": True, "sensitiveOutput": True, "timeout": 15, "argv": lambda _: _fixed("--query", "SELECT version()")},
+    "trivy-image": {"category": "container-vulnerabilities", "exe": "trivy", "network": True, "traffic": False, "sensitiveOutput": True, "timeout": 1800, "argv": lambda args: _image_args("image", ["--format", "json", "--scanners", "vuln"], args)},
+    "grype-image": {"category": "container-vulnerabilities", "exe": "grype", "network": True, "traffic": False, "sensitiveOutput": True, "timeout": 1800, "argv": lambda args: _image_args("", ["-o", "json"], args)},
+    "dockle-image": {"category": "container-hardening", "exe": "dockle", "network": False, "traffic": False, "sensitiveOutput": True, "timeout": 900, "argv": lambda args: _image_args("", ["--exit-code", "0"], args)},
     "nmap-local": {"category": "exposure", "exe": "nmap", "network": True, "traffic": False, "timeout": 900, "active": True, "argv": lambda args: _nmap_args(args)},
     "tshark-summary": {"category": "traffic", "exe": "tshark", "network": False, "traffic": True, "timeout": 360, "argv": lambda args: _tshark_args(args)},
 }
@@ -88,14 +99,28 @@ def _tshark_args(args: dict[str, Any]) -> list[str]:
     return argv
 
 
+def _docker_inspect_args(args: dict[str, Any]) -> list[str]:
+    container_id = args.get("containerId")
+    if not isinstance(container_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", container_id):
+        raise ValueError("docker-inspect requires one Docker container ID or name")
+    return ["inspect", "--type", "container", container_id]
+
+
+def _image_args(subcommand: str, prefix: list[str], args: dict[str, Any]) -> list[str]:
+    image = args.get("imageRef")
+    if not isinstance(image, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,255}", image):
+        raise ValueError("image scanner requires one Docker image reference")
+    return ([subcommand] if subcommand else []) + prefix + [image]
+
+
 TOOLS = [
     {"name": "system_catalog", "description": "List allowlisted Linux host security, exposure, and traffic-observation adapters.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "system_doctor", "description": "Read local OS identity and check allowlisted executable availability. It does not execute a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_plan", "description": "Create a non-executing plan for all available Linux host scanners and observation tools.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
-    {"name": "system_virtual_run", "description": "Preview one exact allowlisted command without starting it. nmap requires an explicitly authorized IP; tshark needs a bounded interface and duration.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "adapter"], "additionalProperties": False}},
-    {"name": "system_run", "description": "Execute one allowlisted local command without a shell. It requires a started lifecycle and an identical, previously recorded command preview; active ports and traffic capture also require matching lifecycle consent.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "runId", "adapter"], "additionalProperties": False}},
+    {"name": "system_virtual_run", "description": "Preview one exact allowlisted command without starting it. nmap requires an explicitly authorized IP; image scanners need one image reference; docker-inspect needs one container ID or name.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "adapter"], "additionalProperties": False}},
+    {"name": "system_run", "description": "Execute one allowlisted local command without a shell. It requires a started lifecycle and identical preview; networked image scanners, active ports, traffic capture, and local service probes require matching lifecycle consent.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "runId", "adapter"], "additionalProperties": False}},
     {"name": "system_ingest", "description": "Normalize an existing private local JSON or SARIF host-security report inside the selected report directory without executing a program.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "report": {"type": "string"}, "format": {"enum": ["json", "sarif"]}, "adapter": {"type": "string"}}, "required": ["reportDirectory", "report", "format"], "additionalProperties": False}},
-    {"name": "system_start_run", "description": "Start a durable, consent-owned system assessment lifecycle. No scanner is executed and no report is written.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "mode": {"enum": ["scan", "scan-ai", "scan-agent"]}, "consent": {"type": "object", "properties": {"profileWrite": {"type": "boolean"}, "activeNetwork": {"type": "boolean"}, "trafficCapture": {"type": "boolean"}, "aiTriage": {"type": "boolean"}, "agentReview": {"type": "boolean"}}, "additionalProperties": False}}, "required": ["reportDirectory", "mode", "consent"], "additionalProperties": False}},
+    {"name": "system_start_run", "description": "Start a durable, consent-owned system assessment lifecycle. No scanner is executed and no report is written.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "mode": {"enum": ["scan", "scan-ai", "scan-agent"]}, "consent": {"type": "object", "properties": {"profileWrite": {"type": "boolean"}, "network": {"type": "boolean"}, "activeNetwork": {"type": "boolean"}, "trafficCapture": {"type": "boolean"}, "serviceProbe": {"type": "boolean"}, "aiTriage": {"type": "boolean"}, "agentReview": {"type": "boolean"}}, "additionalProperties": False}}, "required": ["reportDirectory", "mode", "consent"], "additionalProperties": False}},
     {"name": "system_record_run", "description": "Append a preview, scanner result, skipped reason, host-AI triage, or independent review to a started system assessment.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "kind": {"enum": ["scanner", "preview", "skipped", "host_ai_triage", "agent_review"]}, "entry": {"type": "object"}}, "required": ["reportDirectory", "runId", "kind", "entry"], "additionalProperties": False}},
     {"name": "system_finalize_run", "description": "Write the redacted Markdown report for a completed lifecycle under <reportDirectory>/.mnogovid/system-scanner/.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "initialization": {"type": "object"}, "doctor": {"type": "object"}, "plan": {"type": "object"}, "hostAiTriage": {"type": "object"}, "agentReview": {"type": "object"}}, "required": ["reportDirectory", "runId"], "additionalProperties": False}},
     {"name": "system_ai_triage_payload", "description": "Produce a bounded redacted finding payload for host-model triage. It never contacts a model.", "inputSchema": {"type": "object", "properties": {"findings": {"type": "array"}}, "required": ["findings"], "additionalProperties": False}},
@@ -237,11 +262,11 @@ def discover_host() -> dict[str, Any]:
 
 
 def recommend_host(found: dict[str, Any]) -> list[str]:
-    adapters = ["lynis", "clamav", "rkhunter", "chkrootkit", "aide", "debsums", "debsecan", "rpm-verify", "osquery", "listeners", "nftables", "iptables", "ufw", "audit-rules", "journal-warnings", "kernel-modules", "systemd-enabled", "systemd-timers"]
+    adapters = ["lynis", "clamav", "rkhunter", "chkrootkit", "aide", "debsums", "debsecan", "rpm-verify", "osquery", "listeners", "nftables", "iptables", "ufw", "audit-rules", "journal-warnings", "kernel-modules", "systemd-enabled", "systemd-timers", "nginx-config", "mysql-status", "postgres-status", "redis-info", "mongodb-status", "clickhouse-version"]
     managers = set(found.get("packageManagers", []))
     if "rpm" not in managers: adapters.remove("rpm-verify")
     if "apt-get" not in managers and "dpkg" not in managers: adapters.remove("debsecan")
-    if "docker" in found.get("containerRuntimes", []): adapters.append("docker-containers")
+    if "docker" in found.get("containerRuntimes", []): adapters += ["docker-containers", "docker-security-options", "docker-inspect", "trivy-image", "grype-image", "dockle-image"]
     if "podman" in found.get("containerRuntimes", []): adapters.append("podman-containers")
     adapters += ["nmap-local", "tshark-summary"]
     return adapters
@@ -281,7 +306,7 @@ def safe_json(value: Any) -> str:
 
 
 def normalize_consent(value: Any) -> dict[str, bool]:
-    keys = {"profileWrite", "activeNetwork", "trafficCapture", "aiTriage", "agentReview"}
+    keys = {"profileWrite", "network", "activeNetwork", "trafficCapture", "serviceProbe", "aiTriage", "agentReview"}
     if not isinstance(value, dict) or set(value) - keys:
         raise ValueError("consent may contain only known boolean permission fields")
     if any(not isinstance(item, bool) for item in value.values()):
@@ -304,7 +329,7 @@ def normalize_entry(kind: str, entry: dict[str, Any], finding_count: int) -> dic
             raise ValueError(f"{kind} entry requires a bounded command argv")
         result: dict[str, Any] = {"adapter": adapter, "category": ADAPTERS[adapter]["category"], "command": {"argv": [bounded_text(item, 512) for item in argv], "currentDir": bounded_text(command_value.get("currentDir", ""), 512)}}
         if kind == "preview":
-            result.update({"requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "resultStatus": "not_executed"})
+            result.update({"requiresNetwork": bool(entry.get("requiresNetwork")), "requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "requiresServiceProbe": bool(entry.get("requiresServiceProbe")), "resultStatus": "not_executed"})
             return result
         if entry.get("resultStatus") not in ("complete", "failed", "incomplete") or not isinstance(entry.get("exitCode"), int):
             raise ValueError("scanner entry requires resultStatus and integer exitCode")
@@ -316,7 +341,7 @@ def normalize_entry(kind: str, entry: dict[str, Any], finding_count: int) -> dic
         for item in findings[:200]:
             if not isinstance(item, dict): continue
             normalized_findings.append({"adapter": adapter, "ruleId": bounded_text(item.get("ruleId", item.get("id", "")), 160), "severity": bounded_text(item.get("severity", "review"), 40), "title": bounded_text(item.get("title", "")), "location": bounded_text(item.get("location", item.get("path", "")), 512), "line": item.get("line") if isinstance(item.get("line"), int) else None, "library": bounded_text(item.get("library", item.get("package", "")), 160), "installedVersion": bounded_text(item.get("installedVersion", item.get("version", "")), 160), "fixedVersion": bounded_text(item.get("fixedVersion", ""), 160)})
-        result.update({"resultStatus": entry["resultStatus"], "exitCode": entry["exitCode"], "requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "findings": normalized_findings, "observations": [bounded_text(item) for item in observations[:200] if isinstance(item, str)]})
+        result.update({"resultStatus": entry["resultStatus"], "exitCode": entry["exitCode"], "requiresNetwork": bool(entry.get("requiresNetwork")), "requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "requiresServiceProbe": bool(entry.get("requiresServiceProbe")), "findings": normalized_findings, "observations": [bounded_text(item) for item in observations[:200] if isinstance(item, str)]})
         result["counts"] = {"findings": len(result["findings"]), "observations": len(result["observations"])}
         return result
     notes = entry.get("findingNotes")
@@ -366,6 +391,88 @@ def normalize_output(adapter: str, output: str) -> tuple[list[dict[str, Any]], l
     findings = [{"adapter": adapter, "severity": "review", "title": line[:500]} for line in matched[:200]]
     observations = [line[:500] for line in lines[:200] if line not in matched]
     return findings, observations
+
+
+def normalize_docker_inspect(output: str) -> tuple[list[dict[str, Any]], list[str]]:
+    try:
+        raw = json.loads(output)
+    except json.JSONDecodeError:
+        return [], ["Docker inspect did not return JSON; review the redacted command diagnostic."]
+    containers = raw if isinstance(raw, list) else [raw]
+    findings: list[dict[str, Any]] = []
+    observations: list[str] = []
+    for container in containers[:1]:
+        if not isinstance(container, dict): continue
+        host = container.get("HostConfig") if isinstance(container.get("HostConfig"), dict) else {}
+        config = container.get("Config") if isinstance(container.get("Config"), dict) else {}
+        if host.get("Privileged") is True: findings.append({"adapter": "docker-inspect", "severity": "high", "title": "Container is privileged"})
+        if host.get("NetworkMode") == "host": findings.append({"adapter": "docker-inspect", "severity": "high", "title": "Container uses host networking"})
+        if host.get("PidMode") == "host" or host.get("IpcMode") == "host": findings.append({"adapter": "docker-inspect", "severity": "high", "title": "Container shares a host namespace"})
+        caps = host.get("CapAdd")
+        if isinstance(caps, list) and caps: findings.append({"adapter": "docker-inspect", "severity": "review", "title": "Container adds Linux capabilities beyond Docker defaults"})
+        options = host.get("SecurityOpt")
+        if isinstance(options, list) and any("unconfined" in str(option).lower() for option in options): findings.append({"adapter": "docker-inspect", "severity": "high", "title": "Container disables a confinement profile"})
+        mounts = container.get("Mounts") if isinstance(container.get("Mounts"), list) else []
+        if any(isinstance(mount, dict) and str(mount.get("Source")) == "/" for mount in mounts): findings.append({"adapter": "docker-inspect", "severity": "high", "title": "Container mounts the host root filesystem"})
+        if any(isinstance(mount, dict) and str(mount.get("Destination")) == "/var/run/docker.sock" for mount in mounts): findings.append({"adapter": "docker-inspect", "severity": "high", "title": "Container receives the Docker socket"})
+        user = config.get("User")
+        if user in (None, "", "0", "root"): observations.append("Container process is configured to run as root or leaves the user unspecified")
+    return findings[:200], observations[:200]
+
+
+def normalize_docker_security_options(output: str) -> tuple[list[dict[str, Any]], list[str]]:
+    try:
+        options = json.loads(output)
+    except json.JSONDecodeError:
+        return [], ["Docker security-option query did not return JSON; raw output was withheld."]
+    if not isinstance(options, list):
+        return [], ["Docker daemon returned a security-option response"]
+    return [], [f"Docker daemon reports {len(options)} configured security options"]
+
+
+def normalize_service_probe(adapter: str, output: str) -> tuple[list[dict[str, Any]], list[str]]:
+    text = output.lower()
+    if adapter == "postgres-status" and ("rejecting" in text or "no response" in text):
+        return [{"adapter": adapter, "severity": "review", "title": "PostgreSQL is not accepting the local readiness probe"}], []
+    if adapter == "nginx-config" and "test is successful" in text:
+        return [], ["Nginx configuration syntax check completed successfully"]
+    if adapter == "clickhouse-version" and output.strip():
+        return [], ["ClickHouse local client returned a server version"]
+    if adapter in {"mysql-status", "redis-info", "mongodb-status", "postgres-status"} and output.strip():
+        return [], [f"{adapter} returned a local read-only status response"]
+    return [], []
+
+
+def normalize_image_scan(adapter: str, output: str) -> tuple[list[dict[str, Any]], list[str]]:
+    if adapter == "dockle-image":
+        findings = []
+        for line in output.splitlines():
+            match = re.match(r"^(FATAL|WARN)\s*-\s*([A-Z0-9-]+):\s*(.+)$", line.strip())
+            if match:
+                findings.append({"adapter": adapter, "ruleId": match.group(2), "severity": "high" if match.group(1) == "FATAL" else "review", "title": match.group(3)[:300]})
+        return findings[:200], []
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        return [], ["Image scanner did not return parseable JSON; raw output was withheld."]
+    findings: list[dict[str, Any]] = []
+    if adapter == "trivy-image":
+        results = data.get("Results", []) if isinstance(data, dict) else []
+        for result in results if isinstance(results, list) else []:
+            target = result.get("Target") if isinstance(result, dict) else None
+            vulnerabilities = result.get("Vulnerabilities", []) if isinstance(result, dict) else []
+            for vulnerability in vulnerabilities if isinstance(vulnerabilities, list) else []:
+                if isinstance(vulnerability, dict):
+                    findings.append({"adapter": adapter, "ruleId": vulnerability.get("VulnerabilityID"), "severity": vulnerability.get("Severity") or "review", "title": vulnerability.get("Title") or vulnerability.get("PkgName") or vulnerability.get("VulnerabilityID"), "library": vulnerability.get("PkgName"), "installedVersion": vulnerability.get("InstalledVersion"), "fixedVersion": vulnerability.get("FixedVersion"), "location": target})
+    elif adapter == "grype-image":
+        matches = data.get("matches", []) if isinstance(data, dict) else []
+        for match in matches if isinstance(matches, list) else []:
+            if not isinstance(match, dict): continue
+            vulnerability = match.get("vulnerability") if isinstance(match.get("vulnerability"), dict) else {}
+            artifact = match.get("artifact") if isinstance(match.get("artifact"), dict) else {}
+            fix = vulnerability.get("fix") if isinstance(vulnerability.get("fix"), dict) else {}
+            findings.append({"adapter": adapter, "ruleId": vulnerability.get("id"), "severity": vulnerability.get("severity") or "review", "title": vulnerability.get("description") or vulnerability.get("id"), "library": artifact.get("name"), "installedVersion": artifact.get("version"), "fixedVersion": ", ".join(fix.get("versions", [])) if isinstance(fix.get("versions"), list) else None})
+    return findings[:200], []
 
 
 def parse_ingested_report(value: Any, adapter: str | None = None) -> list[dict[str, Any]]:
@@ -425,7 +532,7 @@ def run_one(root: Path, args: dict[str, Any], virtual: bool) -> dict[str, Any]:
     if not isinstance(ident, str):
         raise ValueError("adapter must be a string")
     spec, argv = command(ident, args)
-    base = {"adapter": ident, "category": spec["category"], "host": read_os_release(), "requiresActiveNetwork": spec.get("network", False), "requiresTrafficCapture": spec.get("traffic", False), "command": {"argv": argv, "currentDir": str(root)}}
+    base = {"adapter": ident, "category": spec["category"], "host": read_os_release(), "requiresNetwork": spec.get("network", False), "requiresActiveNetwork": spec.get("active", False), "requiresTrafficCapture": spec.get("traffic", False), "requiresServiceProbe": spec.get("serviceProbe", False), "command": {"argv": argv, "currentDir": str(root)}}
     if virtual:
         return {**base, "execution": "virtual", "processStarted": False, "resultStatus": "not_executed", "findings": []}
     if shutil.which(spec["exe"]) is None:
@@ -433,9 +540,19 @@ def run_one(root: Path, args: dict[str, Any], virtual: bool) -> dict[str, Any]:
     completed = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=spec["timeout"], check=False)
     output = (completed.stdout or "")[:MAX_OUTPUT]
     error = (completed.stderr or "")[:MAX_OUTPUT]
-    findings, observations = normalize_output(ident, output)
+    if ident == "docker-inspect":
+        findings, observations = normalize_docker_inspect(output)
+    elif ident == "docker-security-options":
+        findings, observations = normalize_docker_security_options(output)
+    elif ident in {"trivy-image", "grype-image", "dockle-image"}:
+        findings, observations = normalize_image_scan(ident, output)
+    elif spec.get("serviceProbe") or ident == "nginx-config":
+        findings, observations = normalize_service_probe(ident, output)
+    else:
+        findings, observations = normalize_output(ident, output)
     status = "complete" if completed.returncode == 0 or completed.returncode == 1 and findings else "incomplete" if completed.returncode == 1 else "failed"
-    return redact({**base, "execution": "executed", "processStarted": True, "resultStatus": status, "exitCode": completed.returncode, "findings": findings, "observations": observations, "counts": {"findings": len(findings), "observations": len(observations)}, "stdoutSnippet": output[:4000], "stderrSnippet": error[:4000]})
+    snippets = {"stdoutSnippet": output[:4000], "stderrSnippet": error[:4000]} if not spec.get("sensitiveOutput") else {"stdoutSnippet": "[WITHHELD: normalized security fields only]", "stderrSnippet": "[WITHHELD: normalized security fields only]"}
+    return redact({**base, "execution": "executed", "processStarted": True, "resultStatus": status, "exitCode": completed.returncode, "findings": findings, "observations": observations, "counts": {"findings": len(findings), "observations": len(observations)}, **snippets})
 
 
 def state_path(root: Path, run_id: Any) -> Path:
@@ -498,7 +615,7 @@ def render_report(root: Path, run: dict[str, Any], report_id: str) -> str:
     lines += ["## Scan coverage", "", "| Scanner | Result | Findings | Observations | Access |", "| --- | --- | --- | --- | --- |"]
     for item in scanners:
         counts = item.get("counts") or {}
-        access = "active network" if item.get("requiresActiveNetwork") else "traffic capture" if item.get("requiresTrafficCapture") else "local"
+        access = "active network" if item.get("requiresActiveNetwork") else "network database" if item.get("requiresNetwork") else "traffic capture" if item.get("requiresTrafficCapture") else "local service probe" if item.get("requiresServiceProbe") else "local"
         lines.append(f"| {safe_text(item.get('adapter', 'unknown'), 80)} | {safe_text(item.get('resultStatus', 'unknown'), 40)} | {counts.get('findings', len(item.get('findings', [])))} | {counts.get('observations', len(item.get('observations', [])))} | {access} |")
     if not scanners:
         lines.append("| No scanner was run | not executed | 0 | 0 | local |")
@@ -535,7 +652,7 @@ def content(value: Any, error: bool = False) -> dict[str, Any]:
 def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "system_catalog":
-            return content({"adapters": [{"id": key, "category": value["category"], "executable": value["exe"], "requiresActiveNetwork": value.get("network", False), "requiresTrafficCapture": value.get("traffic", False)} for key, value in ADAPTERS.items()], "safety": "No remediation, installations, arbitrary commands, PCAP files, or unapproved active network probes."})
+            return content({"adapters": [{"id": key, "category": value["category"], "executable": value["exe"], "requiresNetwork": value.get("network", False), "requiresActiveNetwork": value.get("active", False), "requiresTrafficCapture": value.get("traffic", False), "requiresServiceProbe": value.get("serviceProbe", False)} for key, value in ADAPTERS.items()], "safety": "No remediation, installations, arbitrary commands, PCAP files, or unapproved network/service probes. Sensitive service and Docker output is normalized before it is returned."})
         if name in ("system_doctor", "system_plan"):
             root = report_directory(args.get("reportDirectory")); data = plan(root)
             if name == "system_doctor":
@@ -547,10 +664,14 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name == "system_run":
             root = report_directory(args.get("reportDirectory")); run = started_run(root, args.get("runId"))
             preview = run_one(root, args, True)
+            if preview["requiresNetwork"] and not run["consent"]["network"]:
+                raise ValueError("network consent was not recorded for this lifecycle")
             if preview["requiresActiveNetwork"] and not run["consent"]["activeNetwork"]:
                 raise ValueError("active network consent was not recorded for this lifecycle")
             if preview["requiresTrafficCapture"] and not run["consent"]["trafficCapture"]:
                 raise ValueError("traffic-capture consent was not recorded for this lifecycle")
+            if preview["requiresServiceProbe"] and not run["consent"]["serviceProbe"]:
+                raise ValueError("local service-probe consent was not recorded for this lifecycle")
             if not any(item.get("adapter") == preview["adapter"] and item.get("command", {}).get("argv") == preview["command"]["argv"] for item in run["virtualCommands"]):
                 raise ValueError("record an identical system_virtual_run preview in this lifecycle before executing")
             return content(run_one(root, args, False))

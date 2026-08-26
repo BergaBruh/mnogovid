@@ -58,6 +58,32 @@ class SystemMcpTests(unittest.TestCase):
         self.assertTrue(value["requiresTrafficCapture"])
         self.assertIn("duration:30", value["command"]["argv"])
 
+    def test_container_image_and_inspect_previews_are_bounded(self) -> None:
+        result = system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "docker-inspect", "containerId": "bad;value"})
+        self.assertTrue(result["isError"])
+        value = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "docker-inspect", "containerId": "web-api.1"}))
+        self.assertEqual(value["command"]["argv"][-1], "web-api.1")
+        image = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "trivy-image", "imageRef": "registry.example/app:1.2"}))
+        self.assertTrue(image["requiresNetwork"])
+        self.assertIn("registry.example/app:1.2", image["command"]["argv"])
+
+    def test_docker_inspect_returns_only_security_findings(self) -> None:
+        output = json.dumps([{"Config": {"Env": ["TOKEN=must-not-leak"], "User": ""}, "HostConfig": {"Privileged": True, "NetworkMode": "host", "CapAdd": ["SYS_ADMIN"], "SecurityOpt": ["seccomp=unconfined"]}, "Mounts": [{"Source": "/", "Destination": "/host"}, {"Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock"}]}])
+        findings, observations = system_mcp.normalize_docker_inspect(output)
+        self.assertGreaterEqual(len(findings), 5)
+        self.assertTrue(any("root filesystem" in item["title"] for item in findings))
+        self.assertNotIn("must-not-leak", json.dumps(findings + [{"observation": item} for item in observations]))
+
+    def test_image_scanners_normalize_findings_without_raw_report(self) -> None:
+        trivy = {"Results": [{"Target": "app:1", "Vulnerabilities": [{"VulnerabilityID": "CVE-2026-1", "Severity": "CRITICAL", "PkgName": "openssl", "InstalledVersion": "1.0", "FixedVersion": "1.1", "Title": "example"}]}]}
+        findings, observations = system_mcp.normalize_image_scan("trivy-image", json.dumps(trivy))
+        self.assertEqual(observations, [])
+        self.assertEqual(findings[0]["ruleId"], "CVE-2026-1")
+        self.assertEqual(findings[0]["fixedVersion"], "1.1")
+        findings, observations = system_mcp.normalize_image_scan("dockle-image", "FATAL - CIS-DI-0001: Create a user for the container\nsecret details must not be retained\n")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(observations, [])
+
     def test_inventory_is_not_automatically_a_security_finding(self) -> None:
         findings, observations = system_mcp.normalize_output("listeners", "tcp LISTEN 0 4096 127.0.0.1:8080\n")
         self.assertEqual(findings, [])
@@ -101,6 +127,14 @@ class SystemMcpTests(unittest.TestCase):
         result = system_mcp.call("system_run", {"reportDirectory": self.root, "runId": started["runId"], "adapter": "nmap-local", "target": "127.0.0.1", "authorizedTarget": True})
         self.assertTrue(result["isError"])
         self.assertIn("consent", payload(result)["error"])
+
+    def test_service_probe_execution_needs_lifecycle_consent(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {"serviceProbe": False}}))
+        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "mysql-status"}))
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": started["runId"], "kind": "preview", "entry": preview})
+        result = system_mcp.call("system_run", {"reportDirectory": self.root, "runId": started["runId"], "adapter": "mysql-status"})
+        self.assertTrue(result["isError"])
+        self.assertIn("service-probe consent", payload(result)["error"])
 
     def test_init_refuses_a_symlinked_profile(self) -> None:
         profile = Path(self.root) / ".mnogovid-system-scanner.json"

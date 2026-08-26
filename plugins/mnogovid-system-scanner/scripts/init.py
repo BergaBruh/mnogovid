@@ -37,6 +37,8 @@ def main() -> int:
     parser.add_argument("--write", action="store_true", help=f"create {PROFILE_NAME} if absent")
     parser.add_argument("--force", action="store_true", help="replace an existing profile; requires --write")
     parser.add_argument("--allow-active-network", action="store_true", help="record a preference for later explicitly approved Nmap probes")
+    parser.add_argument("--allow-network", action="store_true", help="record a preference for later explicitly approved vulnerability-database use")
+    parser.add_argument("--allow-service-probe", action="store_true", help="record a preference for later explicitly approved local service status probes")
     parser.add_argument("--allow-traffic-capture", action="store_true", help="record a preference for later explicitly approved bounded packet summaries")
     parser.add_argument("--json", action="store_true", help="print JSON")
     args = parser.parse_args()
@@ -56,7 +58,9 @@ def main() -> int:
             "generatedBy": "mnogovid-system-scanner init",
             "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
             "allowActiveNetwork": args.allow_active_network,
+            "allowNetwork": args.allow_network,
             "allowTrafficCapture": args.allow_traffic_capture,
+            "allowServiceProbe": args.allow_service_probe,
             "availableAdapters": [item["adapter"] for item in result["runs"] if item["available"]],
             "recommendedAdapters": result["recommendedAdapters"],
             "installationGuide": result["installationGuide"],

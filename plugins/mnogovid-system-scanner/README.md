@@ -23,6 +23,8 @@ inspected.
 | Persistence | enabled systemd units and timers |
 | Audit, kernel, and logs | audit rules, loaded kernel modules, warning journal entries |
 | Containers | Docker and Podman inventory when their CLI is available |
+| Docker hardening and image CVEs | Docker security options/container posture, Trivy, Grype, Dockle |
+| Service posture | Nginx syntax; bounded local MySQL, PostgreSQL, Redis, MongoDB, and ClickHouse probes |
 | Active ports (explicit target only) | Nmap, top 100 ports with light version detection |
 | Live traffic metadata (bounded) | TShark, 5–300 seconds, no packet file |
 
@@ -91,8 +93,12 @@ python3 /path/to/mnogovid-system-scanner/scripts/init.py /safe/report-directory 
 For every adapter the agent previews its exact argv and asks for approval. Two
 additional controls are deliberately separate:
 
+- Image scanners with external vulnerability databases require `network`
+  consent, an image reference, and per-scanner approval.
 - `nmap-local` needs `--allow-active-network`, `authorizedTarget=true`, and one
   explicitly authorized literal IP.
+- Database clients require `serviceProbe` consent and use only fixed local,
+  read-only status commands. Their raw output is withheld after normalization.
 - `tshark-summary` needs `--allow-traffic-capture`, a named interface, and a
   5–300 second capture interval. It emits metadata to the scanner result only,
   not a PCAP file; packet metadata can still be sensitive.

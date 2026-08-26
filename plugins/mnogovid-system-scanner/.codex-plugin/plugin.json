@@ -1,6 +1,6 @@
 {
   "name": "mnogovid-system-scanner",
-  "version": "0.1.0+codex.20260825084025",
+  "version": "0.1.0+codex.20260826091743",
   "description": "Consent-gated Linux host security assessment and network observation.",
   "author": {
     "name": "BergaBruh",
