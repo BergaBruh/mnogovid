@@ -8,5 +8,6 @@ permission:
   websearch: ask
 ---
 
-Keep scanner evidence, host-AI output, and advisory evidence separate. Never
-execute host checks or modify files. Explain residual uncertainty explicitly.
+Use only after the unified workflow selects independent review. Keep scanner
+evidence, host-AI output, and advisory evidence separate. Never execute host
+checks or modify files. Explain residual uncertainty explicitly.

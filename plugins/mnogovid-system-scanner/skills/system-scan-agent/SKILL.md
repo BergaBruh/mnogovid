@@ -5,7 +5,9 @@ description: Run consent-gated Linux host checks, then obtain host-AI triage and
 
 # Linux system scan with independent review
 
-Follow `system-scan-ai` first. Once the host-AI triage is recorded, ask a
+Use this skill for the “adapters + AI triage + independent review” branch of
+the unified workflow. Follow bootstrap, toolchain validation, local/remote
+target selection, and host-AI triage first. Once triage is recorded, ask a
 separate question: “May I share the bounded, redacted results and AI triage
 with the independent system-triage agent?” Do not delegate before a clear yes.
 

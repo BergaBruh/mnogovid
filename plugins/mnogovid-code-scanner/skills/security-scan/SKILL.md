@@ -5,8 +5,9 @@ description: Plan, approve, execute, and report an evidence-first security scan 
 
 # Security scan
 
-Use this skill for a scan of the current workspace when the requested result
-must be reproducible local scanner evidence rather than an AI-only review. It
+Use this skill for the adapters-only branch of the unified Code Scanner
+workflow. Bootstrap the workspace first; then use it when the requested result
+must be reproducible local scanner evidence rather than AI interpretation. It
 supports SAST, secret scanning, software-composition analysis, SBOM, and IaC
 scanners from the plugin allowlist.
 
@@ -30,18 +31,20 @@ treated as project source.
 
 ## Workflow
 
-1. Ask separately about `--write` and `--allow-network`; a denied or unclear
-   answer means that permission is absent.
-2. Run `scripts/init.py <workspace> --json` with only the approved flags.
-   Report available and missing scanner executables and do not install tools.
-3. Call `security_doctor` and `security_plan` to discover project languages,
-   manifests, and relevant allowlisted scanners.
-4. For every candidate, call `security_virtual_run` first. Explain its command,
-   working directory, and network requirement.
-5. Obtain a distinct confirmation for each `security_run`. A network scanner
-   needs both the earlier network approval and approval for that specific run.
-6. Start a lifecycle with `security_start_run`, record every preview, scanner
-   result, and skipped scanner via `security_record_run`.
+1. Call `security_bootstrap` with `createProfile=false`. Ask before creating a
+   missing profile, and stop on an invalid profile. Report available and missing
+   executables; do not install tools.
+2. Ask separately about network-dependent scanners; a denied or unclear answer
+   means that permission is absent.
+3. Call `security_plan` to discover project languages, manifests, and relevant
+   allowlisted scanners.
+4. Start a lifecycle with `security_start_run`, recording the network answer
+   in `consent` and retaining its `runId`.
+5. For every candidate, call `security_virtual_run`, record it with kind
+   `preview`, and explain its command, working directory, and network need.
+6. Obtain a distinct confirmation for each `security_run`. Pass the active
+   `runId`; a network scanner needs both recorded network consent and approval
+   for that exact preview. Record results and skips via `security_record_run`.
 7. Call `security_finalize_run`; it validates the lifecycle-owned report shape
    and stores Markdown in `<workspace>/.mnogovid/code-scanner/<unixtime>/result.md`.
 
@@ -54,7 +57,9 @@ contain host-model reasoning, AI triage, automatic remediation, or raw secrets.
 ## Boundaries
 
 - Never execute a command outside the adapter allowlist or through a shell.
+- Every execution requires the current lifecycle `runId` and an argv-identical
+  recorded preview; permission language alone is not enough.
 - Do not treat `allowNetwork=true` as operating-system egress isolation.
 - Do not modify application source code, dependencies, or lockfiles.
-- Use the `security-scan-ai` or `security-scan-agent` skills only when the
-  user also wants consent-gated model or agent analysis.
+- After unified mode selection, route to the AI or independent-review branch
+  only when the user explicitly chooses it and grants the corresponding consent.

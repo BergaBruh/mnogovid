@@ -5,9 +5,10 @@ description: Validate scanner findings with bounded evidence, approved AI triage
 
 # Security triage
 
-Use this skill after scanners have produced findings that need prioritization,
-false-positive review, or vulnerability-version verification. It is evidence
-analysis, not a scanner and not an automatic patcher.
+Use this skill after the AI-triage or independent-review branch of the unified
+workflow has scanner findings that need prioritization, false-positive review,
+or vulnerability-version verification. It is evidence analysis, not a scanner
+and not an automatic patcher.
 
 ## Inputs
 

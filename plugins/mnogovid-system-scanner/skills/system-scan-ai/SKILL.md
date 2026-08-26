@@ -5,7 +5,9 @@ description: Run approved Linux host checks, then analyze bounded redacted evide
 
 # Linux system scan with AI triage
 
-Follow `system-scan` completely first. Ask separately whether redacted findings
+Use this skill for the “adapters + AI triage” branch selected from the unified
+workflow. Follow `system-scan` through bootstrap, toolchain validation, plan,
+preview, and per-adapter consent first. Ask separately whether redacted findings
 may be shared with the host model; no model analysis occurs until the answer is
 an unambiguous yes.
 

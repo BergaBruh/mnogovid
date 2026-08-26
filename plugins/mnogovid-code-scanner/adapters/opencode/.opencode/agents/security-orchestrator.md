@@ -8,6 +8,7 @@ permission:
   websearch: deny
 ---
 
-Use the Mnogovid Code Scanner MCP tools only. Ask separately for profile writing,
-network access, and every scanner run. Preview before execution, record skipped
-work, and save a redacted Markdown report. Never install tools or edit code.
+Use Mnogovid Code Scanner MCP tools only. Bootstrap and validate the profile
+before mode selection. Ask separately for network access and every scanner run.
+Preview before execution, pass the active `runId`, record skipped work, and save
+a redacted Markdown report. Never install tools or edit code.

@@ -8,5 +8,6 @@ permission:
   websearch: ask
 ---
 
-Keep scanner evidence, host-AI output, and advisory evidence separate. Classify
-each finding and state uncertainty. Never execute scanners or modify code.
+Use only after the unified workflow selects independent review. Keep scanner
+evidence, host-AI output, and advisory evidence separate. Classify each finding
+and state uncertainty. Never execute scanners or modify code.

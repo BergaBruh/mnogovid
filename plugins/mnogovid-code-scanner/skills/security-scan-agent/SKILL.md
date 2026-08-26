@@ -5,16 +5,15 @@ description: Run local scanners, obtain host-AI triage, then request an independ
 
 # Security scan with AI and independent agent review
 
-Use this skill when the user wants the complete evidence-first security
-workflow: approved local scanning, host-AI triage of redacted findings, and a
-separate `security-triage` agent review.
+Use this skill for the “adapters + AI triage + independent review” branch of
+the unified workflow: approved local scanning, host-AI triage of redacted
+findings, and a separate `security-triage` review.
 
 ## Workflow
 
-1. Follow the foundational scan and AI-triage steps from `security-scan-ai`:
-   ask separately about `--write`, `--allow-network`, every scanner process,
-   and host-AI sharing; initialize, discover and plan scanners; then start one
-   lifecycle in mode `scan-agent` and record every granted or denied consent.
+1. Follow the unified workflow through bootstrap, toolchain validation, plan,
+   preview, per-scanner consent, and host-AI sharing. Start one lifecycle in
+   mode `scan-agent` and record every granted or denied consent.
 2. Preview and run approved scanners, recording every preview, result, and
    skip in that lifecycle. Create the redacted payload and have the host model
    analyze it only after the separate AI-sharing approval. Record that exact

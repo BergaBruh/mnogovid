@@ -5,9 +5,10 @@ description: Independently review bounded, redacted Linux host-security findings
 
 # Linux system triage
 
-Use after a completed system scan and explicit approval to share redacted
-evidence. For each finding, state the underlying scanner evidence, confidence,
-likely false-positive causes, and the smallest next read-only verification.
+Use after the independent-review mode of the unified workflow and explicit
+approval to share redacted evidence. For each finding, state scanner evidence,
+host-AI context, confidence, likely false-positive causes, and the smallest
+next read-only verification.
 
 If the user separately permits network advisory lookup, call
 `system_advisory_lookup` for one exact package ecosystem/name/version and keep

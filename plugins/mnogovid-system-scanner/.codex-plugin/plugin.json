@@ -1,6 +1,6 @@
 {
   "name": "mnogovid-system-scanner",
-  "version": "2.0.1",
+  "version": "2.0.3",
   "description": "Consent-gated Linux host security assessment and network observation.",
   "author": {
     "name": "BergaBruh",
@@ -22,7 +22,7 @@
       "agents",
       "skills"
     ],
-    "defaultPrompt": "Start Mnogovid System Scanner onboarding for this workspace: choose local or configured remote MCP target, check the system-scanner profile and toolchain, create a missing profile only after consent, then ask which analysis mode to run."
+    "defaultPrompt": "Start Mnogovid System Scanner onboarding: choose local or configured remote MCP target, bootstrap and validate the profile/toolchain, create a missing profile only after consent, ask for adapters-only, AI-triage, or independent-review mode, and return a redacted report with coverage gaps."
   },
   "mcpServers": "./.mcp.json"
 }

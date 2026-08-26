@@ -5,16 +5,14 @@ description: Run approved local security scanners, then use host AI to analyze b
 
 # Security scan with AI analysis
 
-Use this skill when the user wants reproducible local scanner evidence followed
-by an AI explanation, prioritization, or false-positive review. The scanners
-themselves never invoke an AI model.
+Use this skill for the “adapters + AI triage” branch selected from the unified
+workflow. The scanners themselves never invoke an AI model.
 
 ## Workflow
 
-1. Follow the foundational scan steps from `security-scan`: ask separately
-   about `--write` and `--allow-network`, initialize, discover and plan
-   scanners, then start one lifecycle in mode `scan-ai` and record every
-   granted or denied consent.
+1. Follow `security-scan` through bootstrap, toolchain validation, plan,
+   preview, and per-scanner consent. Start one lifecycle in mode `scan-ai` and
+   record every granted or denied consent.
 2. Preview every candidate, obtain explicit approval for each scanner process,
    and record each preview, result, and skip in that lifecycle.
 3. After local results are collected, ask separately: “May I send the bounded,

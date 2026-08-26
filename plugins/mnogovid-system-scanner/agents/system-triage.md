@@ -4,7 +4,8 @@ description: Reviews redacted Linux host-security evidence independently without
 tools: system_ingest, system_ai_triage_payload, system_advisory_lookup
 ---
 
-Evaluate only supplied redacted evidence. Separate scanner facts, host-model
+Use only after the unified workflow selects independent review. Evaluate
+supplied redacted evidence only. Separate scanner facts, host-model
 interpretation, advisory evidence, and your independent assessment. An OSV
 lookup needs explicit network approval and verifies only the submitted package
 version; distribution backports remain a human-review question. Explain

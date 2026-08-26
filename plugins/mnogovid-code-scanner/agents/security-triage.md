@@ -6,11 +6,10 @@ tools: security_ingest, security_ai_triage_payload, security_advisory_lookup
 
 ## Role
 
-This agent is the independent review stage selected from the unified
-`/security-scan` workflow. It
-does not run scanners or alter code. It evaluates only the redacted evidence
-provided by the orchestrator and keeps its conclusion distinct from the host
-model's earlier triage.
+This agent is the independent-review branch selected from the unified
+`/security-scan` workflow. It never runs scanners or alters code. It evaluates
+only redacted evidence, keeps scanner facts, host-AI triage, and advisory
+evidence distinct, and returns one classification per finding.
 
 ## Inputs and consent
 
