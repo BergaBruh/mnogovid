@@ -23,23 +23,19 @@ Install from the marketplace that contains the plugin:
 codex plugin add mnogovid-code-scanner@<marketplace-name>
 ```
 
-Open a new Codex task after installation. Codex uses skills, not slash
-commands, so state the desired mode in a normal message:
+Open a new Codex task after installation, then invoke the plugin or its one
+unified command:
 
 ```text
-Run security-scan for the whole current workspace. Do not write a profile and do not use the network.
+@mnogovid-code-scanner
+/mnogovid-code-scanner:security-scan
 ```
 
-```text
-Run security-scan-ai for the whole current workspace. Ask before sending redacted findings to AI.
-```
-
-```text
-Run security-scan-agent for the whole current workspace. Ask separately before AI analysis and independent agent review.
-```
-
-The plugin then discovers the project, previews each scanner command, and asks
-for approval before every real scanner process starts.
+The onboarding workflow checks the profile and scanner toolchain first. On the
+first run it asks before creating `.mnogovid-code-scanner.json`; later runs
+validate that profile and show missing adapters before asking how to analyze the
+evidence: adapters only, adapters plus AI triage, or adapters plus AI triage
+and independent review. Each scanner still needs a preview and approval.
 
 ### Claude Code
 
@@ -56,8 +52,6 @@ Then invoke one of the plugin's slash commands:
 
 ```text
 /security-scan
-/security-scan-ai
-/security-scan-agent
 ```
 
 ### OpenCode
@@ -77,8 +71,6 @@ Restart OpenCode and run:
 
 ```text
 /security-scan
-/security-scan-ai
-/security-scan-agent
 ```
 
 ### DeepSeek Harness
@@ -93,9 +85,7 @@ of the whole workspace without AI analysis.”
 
 | Mode | Use it when | Result |
 | --- | --- | --- |
-| `security-scan` | You need reproducible local scanner evidence only. | Scanner findings and coverage report. |
-| `security-scan-ai` | You also want an AI explanation of every finding. | Local evidence plus an AI note for each finding. |
-| `security-scan-agent` | You need a second, independent assessment. | AI notes plus an independent security-triage review. |
+| One `security-scan` workflow | You choose adapters only, AI triage, or AI triage plus independent review after bootstrap. | One consent-gated evidence lifecycle. |
 
 The AI and agent are reviewers, not vulnerability scanners. Scanner evidence
 remains the source of record.

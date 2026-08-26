@@ -1,6 +1,6 @@
 {
   "name": "mnogovid-code-scanner",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "Standalone multi-scanner security orchestration for coding agents.",
   "author": {
     "name": "BergaBruh",
@@ -22,7 +22,7 @@
       "agents",
       "skills"
     ],
-    "defaultPrompt": "Plan a safe security scan for this workspace."
+    "defaultPrompt": "Start Mnogovid Code Scanner onboarding for this workspace: check the code-scanner profile and toolchain, create a missing profile only after consent, then ask which analysis mode to run."
   },
   "mcpServers": "./.mcp.json"
 }

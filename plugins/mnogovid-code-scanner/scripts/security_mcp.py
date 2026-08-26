@@ -16,6 +16,7 @@ from typing import Any
 MAX_OUTPUT = 256 * 1024
 RUNS: dict[str, dict[str, Any]] = {}
 IGNORE = {".git", "node_modules", "target", ".venv", "__pycache__", "vendor", ".mnogovid"}
+PROFILE_NAME = ".mnogovid-code-scanner.json"
 ADAPTERS: dict[str, dict[str, Any]] = {
     "semgrep": {"category":"sast","exe":"semgrep","network":True,"cmd":lambda p:["--json","--config","auto",str(p)]},
     "gosec": {"category":"sast","exe":"gosec","network":False,"cmd":lambda p:["-fmt=json","./..."],"cwd":True},
@@ -43,9 +44,10 @@ ADAPTERS: dict[str, dict[str, Any]] = {
 TOOLS = [
  {"name":"security_catalog","description":"List independent scanner adapters, categories, executables, and advisory/web data requirements.","inputSchema":{"type":"object","properties":{},"additionalProperties":False}},
  {"name":"security_doctor","description":"Discover languages, manifests, infrastructure files, recommended scanners, and installed executables. Does not execute a scanner.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"}},"required":["workspace"],"additionalProperties":False}},
+ {"name":"security_bootstrap","description":"Check the code-scanner profile and workspace toolchain before a scan. Set createProfile=true only after explicit user approval to create a missing profile; it does not execute a scanner.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"createProfile":{"type":"boolean"}},"required":["workspace"],"additionalProperties":False}},
  {"name":"security_plan","description":"Create a non-executing workspace scan plan from detected files and available scanner programs.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"}},"required":["workspace"],"additionalProperties":False}},
  {"name":"security_virtual_run","description":"Preview one allowlisted scanner command without executing it.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"adapter":{"type":"string"},"allowNetwork":{"type":"boolean"}},"required":["workspace","adapter"],"additionalProperties":False}},
- {"name":"security_run","description":"Execute one allowlisted scanner without a shell. Requires an explicit host-approved tool call; network-dependent scanners require allowNetwork=true.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"adapter":{"type":"string"},"allowNetwork":{"type":"boolean"}},"required":["workspace","adapter"],"additionalProperties":False}},
+ {"name":"security_run","description":"Execute one allowlisted scanner without a shell. It requires a started lifecycle and an identical recorded preview; network-dependent scanners require recorded lifecycle consent.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"runId":{"type":"string"},"adapter":{"type":"string"}},"required":["workspace","runId","adapter"],"additionalProperties":False}},
  {"name":"security_ingest","description":"Normalize an existing local JSON, JSON-lines, or SARIF report without executing any program.","inputSchema":{"type":"object","properties":{"report":{"type":"string"},"format":{"enum":["json","sarif"]},"adapter":{"type":"string"}},"required":["report","format"],"additionalProperties":False}},
  {"name":"security_start_run","description":"Create an in-memory, schema-owned scan lifecycle. Record only the user approvals supplied by the host; it does not execute or write anything.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"mode":{"enum":["scan","scan-ai","scan-agent"]},"consent":{"type":"object","properties":{"profileWrite":{"type":"boolean"},"network":{"type":"boolean"},"aiTriage":{"type":"boolean"},"agentReview":{"type":"boolean"}},"additionalProperties":False}},"required":["workspace","mode","consent"],"additionalProperties":False}},
  {"name":"security_record_run","description":"Append scanner evidence, a preview, a skipped-scanner reason, host-AI triage, or independent agent review to a durable started scan lifecycle. It does not execute a process.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"runId":{"type":"string"},"kind":{"enum":["scanner","preview","skipped","host_ai_triage","agent_review"]},"entry":{"type":"object"}},"required":["workspace","runId","kind","entry"],"additionalProperties":False}},
@@ -96,6 +98,26 @@ def plan(root: Path) -> dict[str,Any]:
         item=ADAPTERS[ident]; exe=shutil.which(item["exe"])
         runs.append({"adapter":ident,"category":item["category"],"executable":item["exe"],"available":bool(exe),"requiresNetwork":item["network"],"execution":"not_executed"})
     return {**found,"recommendedAdapters":ids,"runs":runs,"networkUsed":False,"processStarted":False}
+
+def bootstrap(root: Path, create_profile: bool) -> dict[str,Any]:
+    if not isinstance(create_profile,bool): raise ValueError("createProfile must be boolean when supplied")
+    profile_path=root/PROFILE_NAME
+    profile: dict[str,Any]
+    if profile_path.exists() or profile_path.is_symlink():
+        if profile_path.is_symlink() or not profile_path.is_file(): raise ValueError("refusing non-regular or symlinked code-scanner profile")
+        try: saved=json.loads(profile_path.read_text(encoding="utf-8"))
+        except (OSError,json.JSONDecodeError): saved=None
+        valid=isinstance(saved,dict) and saved.get("schemaVersion")==1 and saved.get("generatedBy") in {"mnogovid-code-scanner init","mnogovid-code-scanner bootstrap"}
+        profile={"path":str(profile_path),"action":"verified" if valid else "invalid","valid":valid}
+    elif create_profile:
+        discovered=plan(root)
+        saved={"schemaVersion":1,"generatedBy":"mnogovid-code-scanner bootstrap","generatedAt":datetime.now(timezone.utc).replace(microsecond=0).isoformat(),"recommendedAdapters":discovered["recommendedAdapters"],"availableAdapters":[item["adapter"] for item in discovered["runs"] if item["available"]],"notes":["This profile records discovery only and grants no scanner permission.","Every scanner still requires an explicit preview and approval."]}
+        descriptor=os.open(profile_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW",0),0o600)
+        with os.fdopen(descriptor,"w",encoding="utf-8") as handle: handle.write(json.dumps(saved,ensure_ascii=False,indent=2)+"\n")
+        profile={"path":str(profile_path),"action":"created","valid":True}
+    else: profile={"path":str(profile_path),"action":"missing","valid":False}
+    discovered=plan(root)
+    return {"profile":profile,"doctor":{**discovered,"missingExecutables":[item["executable"] for item in discovered["runs"] if not item["available"]]},"processStarted":False}
 
 def command(root: Path, ident: str) -> tuple[dict[str,Any],list[str],str]:
     if ident not in ADAPTERS: raise ValueError(f"unknown adapter: {ident}")
@@ -362,6 +384,8 @@ def call(name:str,args:dict[str,Any])->dict[str,Any]:
         if name=="security_catalog": return content({"adapters":[{"id":k,"category":v["category"],"executable":v["exe"],"requiresNetwork":v["network"]} for k,v in ADAPTERS.items()],"webSources":["OSV","NVD","GitHub Advisory Database","vendor advisory databases"],"ai":"Use security_ai_triage_payload with the host model after explicit approval."})
         if name=="security_doctor":
             root=workspace(args.get("workspace")); data=plan(root); return content({**data,"missingExecutables":[r["executable"] for r in data["runs"] if not r["available"]]})
+        if name=="security_bootstrap":
+            root=workspace(args.get("workspace")); return content(bootstrap(root,args.get("createProfile",False)))
         if name=="security_plan": return content(plan(workspace(args.get("workspace"))))
         if name=="security_start_run":
             root=workspace(args.get("workspace")); mode=args.get("mode"); consent=args.get("consent")
@@ -401,10 +425,17 @@ def call(name:str,args:dict[str,Any])->dict[str,Any]:
                     report[key]=value
             result=write_report(root,run["mode"],report); state_path(root,run_id).unlink(); del RUNS[run_id]
             return content({**result,"runId":run_id,"finalized":True})
-        if name in ("security_virtual_run","security_run"):
+        if name=="security_virtual_run":
             root=workspace(args.get("workspace")); ident=args.get("adapter")
             if not isinstance(ident,str): raise ValueError("adapter must be a string")
-            return content(run_one(root,ident,args.get("allowNetwork") is True,name=="security_virtual_run"))
+            return content(run_one(root,ident,args.get("allowNetwork") is True,True))
+        if name=="security_run":
+            root=workspace(args.get("workspace")); ident=args.get("adapter"); run=started_run(root,args.get("runId"))
+            if not isinstance(ident,str): raise ValueError("adapter must be a string")
+            preview=run_one(root,ident,run["consent"].get("network") is True,True)
+            if preview["requiresNetwork"] and run["consent"].get("network") is not True: raise ValueError("network consent was not recorded for this lifecycle")
+            if not any(item.get("adapter")==preview["adapter"] and item.get("command",{}).get("argv")==preview["command"]["argv"] for item in run["virtualCommands"]): raise ValueError("record an identical security_virtual_run preview in this lifecycle before executing")
+            return content(run_one(root,ident,run["consent"].get("network") is True,False))
         if name=="security_ingest":
             report=Path(str(args.get("report",""))).expanduser().resolve(); fmt=args.get("format")
             if not report.is_file() or fmt not in ("json","sarif"): raise ValueError("report must be an existing file and format must be json or sarif")
