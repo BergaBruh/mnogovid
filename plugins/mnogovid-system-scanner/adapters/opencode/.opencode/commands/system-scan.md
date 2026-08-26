@@ -1,7 +1,9 @@
 ---
-description: Run consent-gated Linux host assessment without AI analysis
+description: Choose and run consent-gated Linux host assessment mode
 ---
 
-Run the complete `system-scan` workflow. Obtain separate consent for profile
-writing, active probes, traffic capture, and every scanner command. Do not use
-AI, advisory lookup, independent review, installation, or remediation.
+Ask first whether to assess the local host or a configured remote MCP host, then
+ask which mode to run: adapters only, adapters plus AI triage, or adapters plus
+AI triage and independent review. Obtain separate consent for every sensitive
+stage, preview each scanner command, and keep scanner, AI, and review evidence
+separate. Do not install tools or remediate a host.

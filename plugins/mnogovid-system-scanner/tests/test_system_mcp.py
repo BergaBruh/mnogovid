@@ -11,10 +11,15 @@ from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "system_mcp.py"
 INIT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "init.py"
+REMOTE_CONFIG_PATH = Path(__file__).resolve().parents[1] / "scripts" / "remote_mcp_config.py"
 SPEC = importlib.util.spec_from_file_location("system_mcp", MODULE_PATH)
 assert SPEC and SPEC.loader
 system_mcp = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(system_mcp)
+REMOTE_SPEC = importlib.util.spec_from_file_location("remote_mcp_config", REMOTE_CONFIG_PATH)
+assert REMOTE_SPEC and REMOTE_SPEC.loader
+remote_mcp_config = importlib.util.module_from_spec(REMOTE_SPEC)
+REMOTE_SPEC.loader.exec_module(remote_mcp_config)
 
 
 def payload(result: dict) -> dict:
@@ -35,6 +40,15 @@ class SystemMcpTests(unittest.TestCase):
         self.assertFalse(value["processStarted"])
         self.assertTrue(value["runs"])
         self.assertIn("host", value)
+
+    def test_bootstrap_creates_profile_only_after_explicit_request(self) -> None:
+        first = payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root}))
+        self.assertEqual(first["profile"]["action"], "missing")
+        self.assertFalse(Path(first["profile"]["path"]).exists())
+        created = payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root, "createProfile": True}))
+        self.assertEqual(created["profile"]["action"], "created")
+        repeated = payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root}))
+        self.assertEqual(repeated["profile"]["action"], "verified")
 
     def test_virtual_listener_preview_never_starts_process(self) -> None:
         value = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "listeners"}))
@@ -175,12 +189,36 @@ class SystemMcpTests(unittest.TestCase):
         names = {item["id"] for item in catalog["adapters"]}
         self.assertIn("journal-warnings", names)
         tools = {item["name"] for item in system_mcp.TOOLS}
-        self.assertTrue({"system_ingest", "system_advisory_lookup"}.issubset(tools))
+        self.assertTrue({"system_bootstrap", "system_ingest", "system_advisory_lookup"}.issubset(tools))
 
     def test_cross_surface_assets_exist(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        for relative in ("claude-code.mcp.json.example", "opencode.json.example", "cordis.patch.yml", "adapters/openai-codex/agents/system-orchestrator.md", "adapters/claude/agents/system-triage.md", "adapters/opencode/.opencode/commands/system-scan.md", "adapters/dsh/agent-presets/system-triage/agent.cordis.yml"):
+        for relative in ("claude-code.mcp.json.example", "opencode.json.example", "cordis.patch.yml", "remote-mcp.toml.example", "commands/system-scan.md", "adapters/openai-codex/agents/system-orchestrator.md", "adapters/claude/agents/system-triage.md", "adapters/opencode/.opencode/commands/system-scan.md", "adapters/dsh/agent-presets/system-triage/agent.cordis.yml"):
             self.assertTrue((root / relative).is_file(), relative)
+
+    def test_remote_mcp_config_is_static_and_alias_bound(self) -> None:
+        config = remote_mcp_config.render("prod-audit", "/opt/mnogovid-system-scanner/scripts/system_mcp.py")
+        self.assertIn("[mcp_servers.mnogovid_system_prod_audit]", config)
+        self.assertIn('"BatchMode=yes"', config)
+        self.assertIn('"ClearAllForwardings=yes"', config)
+        self.assertIn('"ForwardAgent=no"', config)
+        self.assertIn('"StrictHostKeyChecking=yes"', config)
+        with self.assertRaises(ValueError):
+            remote_mcp_config.render("prod;evil", "/opt/mnogovid-system-scanner/scripts/system_mcp.py")
+        with self.assertRaises(ValueError):
+            remote_mcp_config.render("prod-audit", "/opt/../etc/passwd")
+
+    def test_unified_command_uses_chat_consent_and_mode_selection(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        command = (root / "commands" / "system-scan.md").read_text(encoding="utf-8")
+        self.assertNotIn("argument-hint:", command)
+        self.assertIn("May I use `<server-name>`", command)
+        self.assertIn("Do not require command arguments", command)
+        self.assertIn("Adapters + AI triage", command)
+        self.assertIn("system_bootstrap", command)
+        self.assertFalse((root / "commands" / "system-scan-ai.md").exists())
+        self.assertFalse((root / "commands" / "system-scan-agent.md").exists())
+        self.assertFalse((root / "commands" / "system-scan-remote.md").exists())
 
     def test_report_has_reader_first_sections_and_recovery_gap(self) -> None:
         started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {}}))

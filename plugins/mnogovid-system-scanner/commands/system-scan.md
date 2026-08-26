@@ -1,69 +1,48 @@
 ---
-description: Run a consent-gated Linux host security assessment without AI analysis
-argument-hint: '[report-directory]'
+description: Choose and run a consent-gated local or remote Linux security assessment
 ---
 
-Run a complete system assessment against the local Linux host. Never invoke an
-AI model, `system_ai_triage_payload`, `system-triage`, web search, or an
-external advisory lookup.
+Run one unified system-scanner workflow. Do not require command arguments.
 
-The user invoked `/mnogovid-system-scanner:system-scan` with:
+Before scanner-mode selection, complete bootstrap for the selected target.
 
-```text
-$ARGUMENTS
-```
+1. **Target:** “Analyze this local host, or a configured remote
+   SSH-stdio MCP host?” If remote is chosen and more than one remote
+   system-scanner MCP exists, ask which configured connection to use. Then ask:
+   “May I use `<server-name>` for a read-only assessment and store reports in
+   its current remote working directory?” Do not contact the remote MCP before
+   a clear yes. The selected remote MCP's `.` is the default report directory;
+   resolve it and show its absolute path.
+2. **Bootstrap:** Call `system_bootstrap` with `createProfile=false`. If its
+   profile action is `missing`, ask: “Create the missing system-scanner profile
+   in this directory? This records discovery only; it does not start a scan.”
+   Call it again with `createProfile=true` only after yes. If the profile is
+   invalid, stop and report that it must be repaired explicitly. Show available
+   and missing executables from the bootstrap doctor result. Do not continue to
+   scanning while required selected adapters are missing.
+3. **Mode:** Only after successful bootstrap, ask: “How should I analyze the evidence?” Present exactly these modes:
+   - **Adapters only** — reproducible local scanner evidence.
+   - **Adapters + AI triage** — scanner evidence plus bounded, redacted host-AI
+     classification.
+   - **Adapters + AI triage + independent review** — adds a separately approved
+     `system-triage` assessment after host-AI triage.
 
-Use `$ARGUMENTS` as the report directory when supplied; otherwise use the
-current workspace. Resolve it to an absolute existing directory. Never use `/`
-as the report directory.
+Map the mode to `system_start_run`: `scan`, `scan-ai`, or `scan-agent`.
+Use only the chosen target's `system_*` MCP tools; never mix local and remote
+tool results in one lifecycle.
 
-Before doing anything, ask separately in chat:
+Then request independent consent for: creating the profile, networked image
+vulnerability databases, active Nmap probes, local service probes, traffic
+capture, every scanner command, host-AI sharing (AI modes), and independent
+review (review mode). Treat anything but an unambiguous yes as denial.
 
-1. “Create the local `.mnogovid-system-scanner.json` profile with `--write`?
-   Without approval, inspect only.”
-2. “Allow network-dependent image vulnerability scanners to fetch or refresh
-   their advisory databases? Every scanner still needs a preview and a separate
-   approval.”
-3. “Allow active port probes of explicitly authorized IP addresses? This only
-   permits consideration of an Nmap run; every target still needs a preview and
-   a separate approval.”
-4. “Allow local read-only service probes for MySQL, PostgreSQL, Redis, MongoDB,
-   and ClickHouse? Results are normalized; raw configuration, data, and
-   credentials are withheld.”
-5. “Allow bounded metadata-only traffic capture? This only permits
-   consideration of a 5–300 second TShark summary; every capture still needs a
-   preview and a separate approval.”
+Use bootstrap's doctor result and then call `system_plan`; start exactly one
+lifecycle; preview every adapter; and execute only an identical, recorded
+preview with that lifecycle `runId`. Record all results and skips. Never
+install tools, use `sudo`, apply remediation, save a PCAP, expose a remote MCP
+port, copy credentials, or enable SSH agent forwarding.
 
-Treat any answer other than an unambiguous yes as denial. Run
-`scripts/init.py <report-directory> --json` using only the approved flags;
-then call `system_doctor` and `system_plan`. Report available and missing
-executables but never install a package or invoke `sudo`.
-
-Before previews, call `system_start_run` with mode `scan` and record all five
-answers in `consent`. Retain the returned `runId`.
-
-For every planned adapter:
-
-1. Call `system_virtual_run` and record its exact result with
-   `system_record_run` kind `preview`.
-2. Show the command, its purpose, privilege/volume risk, and whether it needs
-   network, active-network, service-probe, or traffic-capture consent.
-3. Ask for approval of that exact `system_run` only. Pass the same `runId`; the
-   server rejects execution unless its exact argv was already previewed in that
-   lifecycle.
-4. Record each result as `scanner`. Record unavailable or declined adapters as
-   `skipped` with the reason.
-
-For `nmap-local`, require lifecycle active-network consent, `authorizedTarget`
-set to true, and exactly one literal IP explicitly authorized by the user. For
-`tshark-summary`, require lifecycle traffic-capture consent, a valid interface,
-and a duration from 5 through 300 seconds. Do not capture a PCAP.
-
-For `trivy-image` and `grype-image`, require lifecycle network consent and one
-validated image reference. For `docker-inspect`, require one container name or
-ID. Docker/service adapter output is normalized inside the MCP server; never
-return raw env, mounts, configuration, database rows, or credentials.
-
-Call `system_finalize_run` exactly once with `runId`, initialization, doctor,
-and plan. Return its report path and concrete coverage gaps. The report belongs
-at `<report-directory>/.mnogovid/system-scanner/<timestamp>/result.md`.
+For AI modes, create `system_ai_triage_payload` only after AI consent and
+record exactly one detailed `findingNotes` entry per finding. For independent
+review, ask a final separate consent, then keep scanner, host-AI, and reviewer
+evidence distinct. Finalize once and return the report path and coverage gaps.

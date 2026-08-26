@@ -27,6 +27,7 @@ from typing import Any
 
 MAX_OUTPUT = 256 * 1024
 RUNS: dict[str, dict[str, Any]] = {}
+PROFILE_NAME = ".mnogovid-system-scanner.json"
 
 
 def _fixed(*argv: str) -> list[str]:
@@ -116,6 +117,7 @@ def _image_args(subcommand: str, prefix: list[str], args: dict[str, Any]) -> lis
 TOOLS = [
     {"name": "system_catalog", "description": "List allowlisted Linux host security, exposure, and traffic-observation adapters.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "system_doctor", "description": "Read local OS identity and check allowlisted executable availability. It does not execute a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
+    {"name": "system_bootstrap", "description": "Check the system-scanner profile and local toolchain before a scan. Set createProfile=true only after explicit user approval to create a missing profile; it does not run a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "createProfile": {"type": "boolean"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_plan", "description": "Create a non-executing plan for all available Linux host scanners and observation tools.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_virtual_run", "description": "Preview one exact allowlisted command without starting it. nmap requires an explicitly authorized IP; image scanners need one image reference; docker-inspect needs one container ID or name.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "adapter"], "additionalProperties": False}},
     {"name": "system_run", "description": "Execute one allowlisted local command without a shell. It requires a started lifecycle and identical preview; networked image scanners, active ports, traffic capture, and local service probes require matching lifecycle consent.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "runId", "adapter"], "additionalProperties": False}},
@@ -280,6 +282,34 @@ def plan(_: Path) -> dict[str, Any]:
         available = shutil.which(spec["exe"]) is not None
         runs.append({"adapter": ident, "category": spec["category"], "executable": spec["exe"], "available": available, "requiresActiveNetwork": spec.get("network", False), "requiresTrafficCapture": spec.get("traffic", False), "execution": "not_executed"})
     return {"host": found, "recommendedAdapters": recommend_host(found), "runs": runs, "processStarted": False, "networkUsed": False, "trafficCaptured": False}
+
+
+def bootstrap(root: Path, create_profile: bool) -> dict[str, Any]:
+    if not isinstance(create_profile, bool):
+        raise ValueError("createProfile must be boolean when supplied")
+    profile_path = root / PROFILE_NAME
+    profile: dict[str, Any]
+    if profile_path.exists() or profile_path.is_symlink():
+        info = os.lstat(profile_path)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise ValueError("refusing non-regular or symlinked system-scanner profile")
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError("system-scanner profile must be private and owned by this user")
+        try:
+            saved = json.loads(read_regular_file(profile_path, MAX_OUTPUT))
+        except json.JSONDecodeError:
+            saved = None
+        valid = isinstance(saved, dict) and saved.get("schemaVersion") == 1 and saved.get("generatedBy") in {"mnogovid-system-scanner bootstrap", "mnogovid-system-scanner init"}
+        profile = {"path": str(profile_path), "action": "verified" if valid else "invalid", "valid": valid}
+    elif create_profile:
+        discovered = plan(root)
+        saved = {"schemaVersion": 1, "generatedBy": "mnogovid-system-scanner bootstrap", "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "recommendedAdapters": discovered["recommendedAdapters"], "availableAdapters": [item["adapter"] for item in discovered["runs"] if item["available"]], "notes": ["This profile records discovery only and grants no scanner permission.", "Every scanner still requires an explicit lifecycle preview and approval."]}
+        atomic_write(profile_path, json.dumps(saved, ensure_ascii=False, indent=2) + "\n", replace=False)
+        profile = {"path": str(profile_path), "action": "created", "valid": True}
+    else:
+        profile = {"path": str(profile_path), "action": "missing", "valid": False}
+    discovered = plan(root)
+    return {"profile": profile, "doctor": {**discovered, "missingExecutables": [item["executable"] for item in discovered["runs"] if not item["available"]]}, "processStarted": False}
 
 
 def redact(value: Any) -> Any:
@@ -658,6 +688,9 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if name == "system_doctor":
                 data["missingExecutables"] = [item["executable"] for item in data["runs"] if not item["available"]]
             return content(data)
+        if name == "system_bootstrap":
+            root = report_directory(args.get("reportDirectory"))
+            return content(bootstrap(root, args.get("createProfile", False)))
         if name == "system_virtual_run":
             root = report_directory(args.get("reportDirectory"))
             return content(run_one(root, args, True))

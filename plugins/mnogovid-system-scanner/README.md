@@ -38,15 +38,44 @@ Install it from the Mnogovid marketplace, then use one of the native Codex
 commands:
 
 ```text
+@mnogovid-system-scanner
 /mnogovid-system-scanner:system-scan
-/mnogovid-system-scanner:system-scan-ai /safe/report-directory
-/mnogovid-system-scanner:system-scan-agent /safe/report-directory
 ```
 
-`system-scan` performs local evidence collection only; `system-scan-ai` adds
-consent-gated host-model triage; and `system-scan-agent` adds a separately
-approved independent review. The optional argument is the existing directory
-where the plugin may store reports; it is not the host scan target.
+The `@` mention invokes the plugin onboarding prompt. The unified command first
+asks whether to assess the local host or a configured remote MCP host, checks
+the profile and toolchain, and creates a missing profile only after consent.
+On later runs it validates the existing profile and available adapters before
+asking which mode to use: adapters only, adapters plus AI triage, or adapters
+plus AI triage and independent review. It collects all scanner permissions
+separately.
+
+### Remote server over SSH-stdio MCP
+
+Install the same plugin on the remote host, preferably at
+`/opt/mnogovid-system-scanner`, and define an SSH alias for a dedicated audit
+account. Generate a static local Codex configuration stanza:
+
+```bash
+python3 /path/to/mnogovid-system-scanner/scripts/remote_mcp_config.py prod-audit
+```
+
+Copy its output into local `~/.codex/config.toml`, restart Codex, then use:
+
+```text
+/mnogovid-system-scanner:system-scan
+```
+
+The MCP protocol stays inside SSH stdio: no remote TCP listener or secret is
+required in the generated configuration. It explicitly disables SSH agent and
+other forwarding, enables batch mode, and requires a known host key. The utility
+only renders TOML; it does not edit the local configuration or contact the
+host. See [`remote-mcp.toml.example`](remote-mcp.toml.example).
+
+The unified command asks in chat which configured remote MCP connection to use
+when there is more than one, then asks a separate first consent before it
+connects or starts discovery. It defaults reports to the remote MCP process's
+current working directory and shows its resolved path before scanner planning.
 
 ### Claude Code
 
@@ -55,8 +84,6 @@ selected report directory, then invoke:
 
 ```text
 /system-scan
-/system-scan-ai
-/system-scan-agent
 ```
 
 ### OpenCode
@@ -116,11 +143,9 @@ declined adapter is a coverage gap—not a clean result.
 
 ## AI and independent review
 
-`system-scan-ai` creates a bounded, secret-redacted payload only after a
-separate approval to share findings with the host model. `system-scan-agent`
-asks a further separate question before sending that same bounded evidence to
-the independent reviewer. Both assessments are advisory and remain distinct
-from the scanner evidence.
+The AI and independent-review modes create bounded, secret-redacted payloads
+only after their own separate approvals. Both assessments are advisory and
+remain distinct from the scanner evidence.
 
 Use `system_ingest` to normalize a pre-existing private local JSON or SARIF
 report inside the selected report directory without starting a process.
