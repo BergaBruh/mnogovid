@@ -2,8 +2,10 @@
   "mcpServers": {
     "mnogovid-code-scanner": {
       "command": "python3",
-      "args": ["./scripts/security_mcp.py"],
-      "cwd": "${PLUGIN_ROOT}"
+      "args": [
+        "-c",
+        "import os, runpy; root = os.environ.get('CLAUDE_PLUGIN_ROOT') or os.environ.get('PLUGIN_ROOT'); runpy.run_path(os.path.join(root, 'scripts', 'security_mcp.py'), run_name='__main__')"
+      ]
     }
   }
 }
