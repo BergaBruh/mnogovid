@@ -7,4 +7,4 @@ files are host-native entrypoints and must not be treated as interchangeable.
 | --- | --- | --- |
 | Claude Code | `claude/agents/*.md`; root `commands/*.md` | The marketplace plugin uses compatible root agents and commands; these files are the Claude-specific definitions for a host-specific release. |
 | Codex | `openai-codex/agents/*.md`; root `commands/security-scan.md` | `@mnogovid-code-scanner` or one unified `/security-scan` command runs bootstrap, then asks for analysis mode. |
-| OpenCode | `opencode/.opencode/{agents,commands}/*.md` | Copy `.opencode/agents/` and `.opencode/commands/` into the target workspace after configuring the Mnogovid MCP server. |
+| OpenCode | npm MCP binary | Add an `mcp` stanza that runs `npx --yes @bergabruh/code-scanner`; OpenCode exposes the Python MCP tools with the server-name prefix. |

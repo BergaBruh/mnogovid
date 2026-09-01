@@ -43,7 +43,7 @@ commands:
 ```
 
 The `@` mention invokes the plugin onboarding prompt. The unified command first
-asks whether to assess the local host or a configured remote MCP host, checks
+asks whether to assess the local host or a remote SSH alias, checks
 the profile and toolchain, and creates a missing profile only after consent.
 On later runs it validates the existing profile and available adapters before
 asking which mode to use: adapters only, adapters plus AI triage, or adapters
@@ -52,30 +52,19 @@ separately.
 
 ### Remote server over SSH-stdio MCP
 
-Install the same plugin on the remote host, preferably at
-`/opt/mnogovid-system-scanner`, and define an SSH alias for a dedicated audit
-account. Generate a static local Codex configuration stanza:
-
-```bash
-python3 /path/to/mnogovid-system-scanner/scripts/remote_mcp_config.py prod-audit
-```
-
-Copy its output into local `~/.codex/config.toml`, restart Codex, then use:
+Define an exact `Host` alias directly in `~/.ssh/config` for a dedicated audit
+account, then use the same unified command and choose the remote option. Raw
+hostnames and wildcard aliases are rejected:
 
 ```text
 /mnogovid-system-scanner:system-scan
 ```
 
-The MCP protocol stays inside SSH stdio: no remote TCP listener or secret is
-required in the generated configuration. It explicitly disables SSH agent and
-other forwarding, enables batch mode, and requires a known host key. The utility
-only renders TOML; it does not edit the local configuration or contact the
-host. See [`remote-mcp.toml.example`](remote-mcp.toml.example).
-
-The unified command asks in chat which configured remote MCP connection to use
-when there is more than one, then asks a separate first consent before it
-connects or starts discovery. It defaults reports to the remote MCP process's
-current working directory and shows its resolved path before scanner planning.
+The command asks only for that alias. It connects over SSH stdio with agent and
+forwarding disabled, validates the host key, finds `python3`, and checks the
+fixed runner path under `~/.local/share/mnogovid-system-scanner`. If the runner
+is absent or outdated, it separately asks before deploying or updating it.
+There is no remote MCP port, remote path, Python path, or local TOML to manage.
 
 ### Claude Code
 
@@ -88,18 +77,27 @@ selected report directory, then invoke:
 
 ### OpenCode
 
-Merge [`opencode.json.example`](opencode.json.example) into the OpenCode
-configuration, replacing its placeholder `cwd`. Then copy the supplied agent
-and command assets into the target workspace:
+Add the MCP server to the project or global `opencode.json` and restart
+OpenCode:
 
-```bash
-mkdir -p /safe/report-directory/.opencode
-cp -R /path/to/mnogovid-system-scanner/adapters/opencode/.opencode/agents /safe/report-directory/.opencode/
-cp -R /path/to/mnogovid-system-scanner/adapters/opencode/.opencode/commands /safe/report-directory/.opencode/
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mnogovid-system-scanner": {
+      "type": "local",
+      "command": ["npx", "--yes", "@bergabruh/system-scanner"],
+      "enabled": true
+    }
+  }
+}
 ```
 
-Restart OpenCode, verify `opencode mcp list` reports the system scanner as
-connected, then run `/system-scan`.
+`npx` installs and starts the bundled Python MCP server; no absolute path or
+copied `.opencode` assets are needed. OpenCode exposes its tools with the
+`mnogovid-system-scanner_` prefix and still requests every recorded consent.
+`python3` and individual scanner executables remain system prerequisites and
+are never installed by the package.
 
 First inspect the host/tool availability without starting a scanner:
 
@@ -131,6 +129,13 @@ The database adapters use fixed local read-only status/version commands. They
 can be unavailable when a service is not local, its socket is inaccessible, or
 it requires credentials; such a result is a coverage gap, not a clean bill of
 health.
+
+Before choosing an analysis mode, bootstrap sends a separate utility-readiness
+message. It lists every available and missing adapter, detected package managers,
+candidate package names, and install command templates. The same readiness
+message is collected from a remote host through the SSH runner. Package names
+are candidates and must be verified for the target distribution; the plugin
+never installs utilities itself.
 
 Reports are written only after `system_finalize_run`:
 
@@ -174,8 +179,8 @@ Licensed under the Apache License 2.0.
   scan through an invalid profile.
 - **Adapter missing or permission denied:** install or grant the required
   read-only access through normal system administration, then rerun bootstrap.
-- **Remote MCP unavailable:** verify the SSH alias, known host key, remote
-  Python path, and remote plugin path; the generator does not contact the
-  server or modify `~/.codex/config.toml`.
+- **Remote runner unavailable:** verify only the SSH alias and known host key,
+  then rerun the remote bootstrap. It finds Python automatically and asks before
+  deploying the fixed runner path.
 - **No findings:** a completed set of checks cannot prove the absence of
   compromise, unseen traffic, or kernel-level stealth. Review coverage gaps.

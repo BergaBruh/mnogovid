@@ -8,6 +8,7 @@ automatic external port probing.
 """
 from __future__ import annotations
 
+import base64
 import ipaddress
 import json
 import os
@@ -27,7 +28,42 @@ from typing import Any
 
 MAX_OUTPUT = 256 * 1024
 RUNS: dict[str, dict[str, Any]] = {}
+REMOTE_DEPLOYMENTS: dict[str, dict[str, Any]] = {}
 PROFILE_NAME = ".mnogovid-system-scanner.json"
+REMOTE_RUNNER_DIR = "~/.local/share/mnogovid-system-scanner"
+REMOTE_RUNNER_SCRIPT = REMOTE_RUNNER_DIR + "/system_mcp.py"
+REMOTE_RUNNER_VERSION = REMOTE_RUNNER_DIR + "/version"
+REMOTE_RUNNER_RELEASE = "2.0.2"
+REMOTE_TIMEOUT = 3600
+
+PACKAGE_MANAGER_TEMPLATES = {
+    "apt-get": "sudo apt-get install <package>",
+    "dnf": "sudo dnf install <package>",
+    "yum": "sudo yum install <package>",
+    "pacman": "sudo pacman -S <package>",
+    "zypper": "sudo zypper install <package>",
+    "apk": "sudo apk add <package>",
+}
+PACKAGE_HINTS = {
+    "lynis": {"apt-get":"lynis","dnf":"lynis","pacman":"lynis"},
+    "clamav": {"apt-get":"clamav","dnf":"clamav","pacman":"clamav"},
+    "rkhunter": {"apt-get":"rkhunter","dnf":"rkhunter","pacman":"rkhunter"},
+    "chkrootkit": {"apt-get":"chkrootkit","dnf":"chkrootkit","pacman":"chkrootkit"},
+    "aide": {"apt-get":"aide","dnf":"aide","pacman":"aide"},
+    "nmap-local": {"apt-get":"nmap","dnf":"nmap","pacman":"nmap"},
+    "tshark-summary": {"apt-get":"tshark","dnf":"wireshark-cli","pacman":"wireshark-cli"},
+    "trivy-image": {"apt-get":"trivy","dnf":"trivy","pacman":"trivy"},
+    "grype-image": {"apt-get":"grype","dnf":"grype","pacman":"grype"},
+    "dockle-image": {"apt-get":"dockle","dnf":"dockle","pacman":"dockle"},
+    "docker-containers": {"apt-get":"docker.io","dnf":"docker","pacman":"docker"},
+    "podman-containers": {"apt-get":"podman","dnf":"podman","pacman":"podman"},
+    "nginx-config": {"apt-get":"nginx","dnf":"nginx","pacman":"nginx"},
+    "mysql-status": {"apt-get":"mariadb-client","dnf":"mariadb","pacman":"mariadb-clients"},
+    "postgres-status": {"apt-get":"postgresql-client","dnf":"postgresql","pacman":"postgresql"},
+    "redis-info": {"apt-get":"redis-tools","dnf":"redis","pacman":"redis"},
+    "mongodb-status": {"apt-get":"mongodb-mongosh","dnf":"mongodb-mongosh","pacman":"mongodb-mongosh"},
+    "clickhouse-version": {"apt-get":"clickhouse-client","dnf":"clickhouse-client","pacman":"clickhouse-client"},
+}
 
 
 def _fixed(*argv: str) -> list[str]:
@@ -118,6 +154,10 @@ TOOLS = [
     {"name": "system_catalog", "description": "List allowlisted Linux host security, exposure, and traffic-observation adapters.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "system_doctor", "description": "Read local OS identity and check allowlisted executable availability. It does not execute a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_bootstrap", "description": "Check the system-scanner profile and local toolchain before a scan. Set createProfile=true only after explicit user approval to create a missing profile; it does not run a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "createProfile": {"type": "boolean"}}, "required": ["reportDirectory"], "additionalProperties": False}},
+    {"name": "system_remote_prepare", "description": "Read-only probe of one configured SSH alias: find Python and report whether the fixed Mnogovid remote runner is ready. It never deploys or scans.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}}, "required": ["sshAlias"], "additionalProperties": False}},
+    {"name": "system_remote_authorize_deploy", "description": "Create a short-lived, one-time deployment ticket after the user explicitly approves deploying or updating the runner on the named SSH host. It does not write remotely.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "approveDeployment": {"type": "boolean"}}, "required": ["sshAlias", "approveDeployment"], "additionalProperties": False}},
+    {"name": "system_remote_deploy_runner", "description": "Deploy or update the fixed remote runner under the remote user's ~/.local/share only with a valid one-time deployment ticket. It does not scan the host.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "deploymentId": {"type": "string"}}, "required": ["sshAlias", "deploymentId"], "additionalProperties": False}},
+    {"name": "system_remote_call", "description": "Forward one allowlisted system MCP operation through a prepared SSH alias. Remote scanner and consent enforcement remains inside the remote MCP server.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "operation": {"enum": ["system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"]}, "arguments": {"type": "object"}}, "required": ["sshAlias", "operation", "arguments"], "additionalProperties": False}},
     {"name": "system_plan", "description": "Create a non-executing plan for all available Linux host scanners and observation tools.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_virtual_run", "description": "Preview one exact allowlisted command without starting it. nmap requires an explicitly authorized IP; image scanners need one image reference; docker-inspect needs one container ID or name.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "adapter"], "additionalProperties": False}},
     {"name": "system_run", "description": "Execute one allowlisted local command without a shell. It requires a started lifecycle and identical preview; networked image scanners, active ports, traffic capture, and local service probes require matching lifecycle consent.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "runId", "adapter"], "additionalProperties": False}},
@@ -274,6 +314,16 @@ def recommend_host(found: dict[str, Any]) -> list[str]:
     return adapters
 
 
+def installation_guide(found: dict[str, Any], runs: list[dict[str, Any]]) -> dict[str, Any]:
+    managers = [name for name in found.get("packageManagers", []) if name in PACKAGE_MANAGER_TEMPLATES]
+    missing = []
+    for run in runs:
+        if run["available"]: continue
+        packages = {manager: PACKAGE_HINTS.get(run["adapter"], {}).get(manager) for manager in managers}
+        missing.append({"adapter":run["adapter"],"executable":run["executable"],"candidatePackages":{key:value for key,value in packages.items() if value}})
+    return {"packageManagers":[{"name":name,"commandTemplate":PACKAGE_MANAGER_TEMPLATES[name]} for name in managers],"missingAdapters":missing,"note":"Candidate package names vary by distribution release; verify the package name before installing. The scanner never installs utilities itself."}
+
+
 def plan(_: Path) -> dict[str, Any]:
     found = discover_host()
     runs = []
@@ -281,7 +331,7 @@ def plan(_: Path) -> dict[str, Any]:
         spec = ADAPTERS[ident]
         available = shutil.which(spec["exe"]) is not None
         runs.append({"adapter": ident, "category": spec["category"], "executable": spec["exe"], "available": available, "requiresActiveNetwork": spec.get("network", False), "requiresTrafficCapture": spec.get("traffic", False), "execution": "not_executed"})
-    return {"host": found, "recommendedAdapters": recommend_host(found), "runs": runs, "processStarted": False, "networkUsed": False, "trafficCaptured": False}
+    return {"host": found, "recommendedAdapters": recommend_host(found), "runs": runs, "installationGuide":installation_guide(found,runs), "processStarted": False, "networkUsed": False, "trafficCaptured": False}
 
 
 def bootstrap(root: Path, create_profile: bool) -> dict[str, Any]:
@@ -675,6 +725,105 @@ def write_report(root: Path, run: dict[str, Any]) -> dict[str, Any]:
     return {"reportId": report_id, "path": str(destination), "redacted": True, "truncated": truncated}
 
 
+def validate_ssh_alias(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value):
+        raise ValueError("sshAlias must be a configured SSH alias containing only letters, digits, dot, underscore, or hyphen")
+    config = Path.home() / ".ssh" / "config"
+    try:
+        info = os.lstat(config)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise ValueError("~/.ssh/config must be a regular file when using remote scanning")
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError("~/.ssh/config must be private and owned by this user")
+        text = read_regular_file(config, MAX_OUTPUT)
+    except FileNotFoundError as exc:
+        raise ValueError("remote scanning requires an explicit Host alias in ~/.ssh/config") from exc
+    aliases = set()
+    for line in text.splitlines():
+        match = re.match(r"^\s*Host\s+(.+?)\s*(?:#.*)?$", line, re.I)
+        if not match: continue
+        for candidate in match.group(1).split():
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", candidate): aliases.add(candidate)
+    if value not in aliases:
+        raise ValueError("sshAlias must be an exact Host alias declared directly in ~/.ssh/config")
+    return value
+
+
+def ssh_argv(alias: str, remote_args: list[str]) -> list[str]:
+    return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "StrictHostKeyChecking=yes", alias, *remote_args]
+
+
+def ssh_run(alias: str, remote_args: list[str], *, input_text: str | None = None, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(ssh_argv(alias, remote_args), input=input_text, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def remote_probe(alias: str) -> dict[str, Any]:
+    python = ssh_run(alias, ["sh", "-lc", "command -v python3"], timeout=30)
+    if python.returncode != 0 or not python.stdout.strip():
+        raise ValueError("remote alias connected but python3 was not found; install Python 3 on the remote host")
+    python_path = python.stdout.strip().splitlines()[-1]
+    probe_code = "import json, os; root=os.path.expanduser('" + REMOTE_RUNNER_DIR + "'); print(json.dumps({'home':os.path.expanduser('~'),'runnerPath':os.path.join(root,'system_mcp.py'),'versionPath':os.path.join(root,'version'),'runnerExists':os.path.isfile(os.path.join(root,'system_mcp.py')),'version':open(os.path.join(root,'version')).read().strip() if os.path.isfile(os.path.join(root,'version')) else None}))"
+    result = ssh_run(alias, [python_path, "-c", probe_code], timeout=30)
+    if result.returncode != 0:
+        raise ValueError("remote runner probe failed: " + bounded_text(result.stderr or result.stdout, 500))
+    try:
+        status = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("remote runner probe returned invalid JSON") from exc
+    return {"sshAlias": alias, "pythonPath": python_path, **status}
+
+
+def deploy_remote_runner(alias: str, python_path: str) -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    version = REMOTE_RUNNER_RELEASE
+    payload = base64.b64encode(json.dumps({"script": source, "version": version}).encode()).decode()
+    deploy_code = "import base64,json,os,pathlib,sys,tempfile; data=json.loads(base64.b64decode(sys.stdin.buffer.read())); root=pathlib.Path(os.path.expanduser('" + REMOTE_RUNNER_DIR + "')); root.mkdir(parents=True,exist_ok=True); os.chmod(root,0o700); tmp=root/'system_mcp.py.tmp'; tmp.write_text(data['script'],encoding='utf-8'); os.chmod(tmp,0o600); os.replace(tmp,root/'system_mcp.py'); (root/'version').write_text(data['version']+'\\n',encoding='utf-8'); os.chmod(root/'version',0o600)"
+    result = ssh_run(alias, [python_path, "-c", deploy_code], input_text=payload, timeout=60)
+    if result.returncode != 0:
+        raise ValueError("remote runner deployment failed: " + bounded_text(result.stderr or result.stdout, 500))
+
+
+def remote_deployment_ticket(alias: str, approved: Any) -> dict[str, Any]:
+    if approved is not True:
+        raise ValueError("remote runner deployment requires approveDeployment=true after explicit user approval")
+    status = remote_probe(alias)
+    deployment_id = secrets.token_hex(16)
+    REMOTE_DEPLOYMENTS[deployment_id] = {"sshAlias": alias, "pythonPath": status["pythonPath"], "expiresAt": time.time() + 600}
+    return {"deploymentId": deployment_id, "sshAlias": alias, "runnerExists": status["runnerExists"], "expiresInSeconds": 600, "remoteHome": status["home"]}
+
+
+def consume_remote_deployment(alias: str, deployment_id: Any) -> dict[str, Any]:
+    if not isinstance(deployment_id, str): raise ValueError("deploymentId must be a string")
+    ticket = REMOTE_DEPLOYMENTS.pop(deployment_id, None)
+    if not ticket or ticket["sshAlias"] != alias or ticket["expiresAt"] < time.time():
+        raise ValueError("deployment ticket is missing, expired, or belongs to another SSH alias")
+    deploy_remote_runner(alias, ticket["pythonPath"])
+    status = remote_probe(alias)
+    return {**status, "deployment": "updated"}
+
+
+def remote_call(alias: str, operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if operation not in {"system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"}:
+        raise ValueError("remote operation is not allowlisted")
+    if not isinstance(arguments, dict):
+        raise ValueError("remote operation arguments must be an object")
+    status = remote_probe(alias)
+    if not status.get("runnerExists") or status.get("version") != REMOTE_RUNNER_RELEASE:
+        raise ValueError("remote runner is missing or outdated; obtain a one-time deployment ticket and call system_remote_deploy_runner after explicit deployment consent")
+    launcher = "import os,runpy; runpy.run_path(os.path.expanduser('" + REMOTE_RUNNER_SCRIPT + "'),run_name='__main__')"
+    request = json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":operation,"arguments":arguments}}) + "\n"
+    result = ssh_run(alias, [status["pythonPath"], "-c", launcher], input_text=request, timeout=REMOTE_TIMEOUT)
+    if result.returncode != 0:
+        raise ValueError("remote MCP call failed: " + bounded_text(result.stderr or result.stdout, 500))
+    try:
+        response = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("remote MCP returned invalid JSON-RPC") from exc
+    if "error" in response:
+        raise ValueError("remote MCP protocol error: " + bounded_text(response["error"].get("message", "unknown"), 500))
+    return response.get("result", {})
+
+
 def content(value: Any, error: bool = False) -> dict[str, Any]:
     return {"isError": error, "content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]}
 
@@ -683,6 +832,18 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "system_catalog":
             return content({"adapters": [{"id": key, "category": value["category"], "executable": value["exe"], "requiresNetwork": value.get("network", False), "requiresActiveNetwork": value.get("active", False), "requiresTrafficCapture": value.get("traffic", False), "requiresServiceProbe": value.get("serviceProbe", False)} for key, value in ADAPTERS.items()], "safety": "No remediation, installations, arbitrary commands, PCAP files, or unapproved network/service probes. Sensitive service and Docker output is normalized before it is returned."})
+        if name == "system_remote_prepare":
+            alias = validate_ssh_alias(args.get("sshAlias"))
+            return content({**remote_probe(alias), "expectedVersion": REMOTE_RUNNER_RELEASE, "deployment": "not_requested"})
+        if name == "system_remote_authorize_deploy":
+            alias = validate_ssh_alias(args.get("sshAlias"))
+            return content(remote_deployment_ticket(alias, args.get("approveDeployment")))
+        if name == "system_remote_deploy_runner":
+            alias = validate_ssh_alias(args.get("sshAlias"))
+            return content(consume_remote_deployment(alias, args.get("deploymentId")))
+        if name == "system_remote_call":
+            alias = validate_ssh_alias(args.get("sshAlias"))
+            return remote_call(alias, args.get("operation"), args.get("arguments"))
         if name in ("system_doctor", "system_plan"):
             root = report_directory(args.get("reportDirectory")); data = plan(root)
             if name == "system_doctor":

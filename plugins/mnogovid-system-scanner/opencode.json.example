@@ -3,13 +3,8 @@
   "mcp": {
     "mnogovid-system-scanner": {
       "type": "local",
-      "command": ["python3", "./scripts/system_mcp.py"],
-      "cwd": "/absolute/path/to/mnogovid-system-scanner",
-      "enabled": true,
-      "timeout": 10000
+      "command": ["npx", "--yes", "@bergabruh/system-scanner"],
+      "enabled": true
     }
-  },
-  "permission": {
-    "mnogovid-system-scanner_*": "ask"
   }
 }

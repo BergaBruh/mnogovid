@@ -10,8 +10,11 @@ Before scanner-mode selection, call `security_bootstrap` with
 missing `.mnogovid-code-scanner.json` profile in this workspace? This records
 discovery only; it does not start a scan.” Call it again with
 `createProfile=true` only after yes. If the profile is invalid, stop and report
-that it needs explicit repair. Show available and missing executables from the
-bootstrap doctor result. Do not proceed with selected unavailable adapters.
+that it needs explicit repair. Send a separate utility-readiness message from
+the bootstrap doctor result: available adapters, missing adapters, detected
+package managers, and installation command templates. Package names must be
+verified for the current distribution. Do not proceed with selected unavailable
+adapters.
 
 Only after successful bootstrap, ask: “How should I analyze the evidence?”
 Present exactly these modes:

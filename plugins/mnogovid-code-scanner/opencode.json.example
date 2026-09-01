@@ -3,13 +3,8 @@
   "mcp": {
     "mnogovid-code-scanner": {
       "type": "local",
-      "command": ["python3", "./scripts/security_mcp.py"],
-      "cwd": "/absolute/path/to/mnogovid-code-scanner",
-      "enabled": true,
-      "timeout": 10000
+      "command": ["npx", "--yes", "@bergabruh/code-scanner"],
+      "enabled": true
     }
-  },
-  "permission": {
-    "mnogovid-code-scanner_*": "ask"
   }
 }

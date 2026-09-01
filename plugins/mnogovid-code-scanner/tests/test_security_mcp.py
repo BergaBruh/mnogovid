@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,6 +37,7 @@ class SecurityMcpBootstrapTests(unittest.TestCase):
         verified = payload(security_mcp.call("security_bootstrap", {"workspace": self.root}))
         self.assertEqual(verified["profile"]["action"], "verified")
         self.assertFalse(verified["processStarted"])
+        self.assertIn("installationGuide", verified["doctor"])
 
     def test_bootstrap_refuses_a_symlinked_profile(self) -> None:
         profile = Path(self.root) / ".mnogovid-code-scanner.json"
@@ -53,6 +55,25 @@ class SecurityMcpBootstrapTests(unittest.TestCase):
         self.assertFalse((plugin_root / "commands" / "security-scan-ai.md").exists())
         self.assertFalse((plugin_root / "commands" / "security-scan-agent.md").exists())
         self.assertIn("onboarding", manifest["interface"]["defaultPrompt"])
+
+    def test_npm_mcp_binary_proxies_to_the_python_server(self) -> None:
+        plugin_root = Path(__file__).resolve().parents[1]
+        package = json.loads((plugin_root / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["name"], "@bergabruh/code-scanner")
+        self.assertEqual(package["bin"]["mnogovid-code-scanner"], "./bin/mnogovid-code-scanner.mjs")
+        self.assertIn("bin/*.mjs", package["files"])
+        self.assertIn("scripts/*.py", package["files"])
+        entrypoint = plugin_root / "bin" / "mnogovid-code-scanner.mjs"
+        self.assertTrue(entrypoint.is_file())
+        entrypoint_text = entrypoint.read_text(encoding="utf-8")
+        self.assertIn("python3", entrypoint_text)
+        self.assertIn("security_mcp.py", entrypoint_text)
+        request = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        completed = subprocess.run(["node", str(entrypoint)], input=json.dumps(request) + "\n", text=True, capture_output=True, timeout=5, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        response = json.loads(completed.stdout)
+        self.assertEqual(response["id"], 1)
+        self.assertIn("tools", response["result"])
 
     def test_execution_requires_lifecycle_network_consent_and_matching_preview(self) -> None:
         started = payload(security_mcp.call("security_start_run", {"workspace": self.root, "mode": "scan", "consent": {"network": False}}))

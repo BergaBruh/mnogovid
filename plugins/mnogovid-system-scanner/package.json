@@ -1,9 +1,27 @@
 {
-  "name": "mnogovid-system-scanner",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Standalone Linux system security scanning orchestration plugin.",
+  "name": "@bergabruh/system-scanner",
+  "version": "0.1.1",
+  "description": "MCP server package for consent-gated Linux host security assessment.",
   "license": "Apache-2.0",
+  "bin": {
+    "mnogovid-system-scanner": "./bin/mnogovid-system-scanner.mjs"
+  },
+  "files": [
+    "bin/*.mjs",
+    "scripts/*.py",
+    "README.md",
+    "LICENSE",
+    "bin/*.mjs"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "security",
+    "linux"
+  ],
+  "scripts": {
+    "check": "node --check bin/mnogovid-system-scanner.mjs"
+  },
   "homepage": "https://github.com/BergaBruh/mnogovid",
   "repository": { "type": "git", "url": "git+https://github.com/BergaBruh/mnogovid.git" }
 }

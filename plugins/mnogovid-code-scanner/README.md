@@ -55,22 +55,27 @@ Then invoke one of the plugin's slash commands:
 
 ### OpenCode
 
-Merge [`opencode.json.example`](opencode.json.example) into the project
-`opencode.json`, replacing `/absolute/path/to/mnogovid-code-scanner` with the
-real plugin path. Then copy the adapters into the project's `.opencode/`
-directory:
+Add the MCP server to the project or global `opencode.json` and restart
+OpenCode:
 
-```bash
-mkdir -p /path/to/project/.opencode
-cp -R /path/to/mnogovid-code-scanner/adapters/opencode/.opencode/agents /path/to/project/.opencode/
-cp -R /path/to/mnogovid-code-scanner/adapters/opencode/.opencode/commands /path/to/project/.opencode/
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mnogovid-code-scanner": {
+      "type": "local",
+      "command": ["npx", "--yes", "@bergabruh/code-scanner"],
+      "enabled": true
+    }
+  }
+}
 ```
 
-Restart OpenCode and run:
-
-```text
-/security-scan
-```
+`npx` installs and starts the bundled Python MCP server; no absolute path or
+copied `.opencode` assets are needed. OpenCode exposes its tools with the
+`mnogovid-code-scanner_` prefix and still requests every recorded consent.
+`python3` and individual scanner executables remain system prerequisites and
+are never installed by the package.
 
 ## Choose a mode
 

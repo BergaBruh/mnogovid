@@ -1,9 +1,26 @@
 {
-  "name": "mnogovid-code-scanner",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Standalone multi-scanner security orchestration plugin.",
+  "name": "@bergabruh/code-scanner",
+  "version": "0.1.1",
+  "description": "MCP server package for consent-gated workspace security scanning.",
   "license": "Apache-2.0",
+  "bin": {
+    "mnogovid-code-scanner": "./bin/mnogovid-code-scanner.mjs"
+  },
+  "files": [
+    "bin/*.mjs",
+    "scripts/*.py",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "security",
+    "sast"
+  ],
+  "scripts": {
+    "check": "node --check bin/mnogovid-code-scanner.mjs"
+  },
   "homepage": "https://github.com/BergaBruh/mnogovid",
   "repository": {
     "type": "git",

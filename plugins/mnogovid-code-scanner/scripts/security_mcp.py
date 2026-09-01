@@ -8,7 +8,7 @@ bounded/redacted payload for the host model's AI triage.
 """
 from __future__ import annotations
 
-import json, os, re, shutil, subprocess, sys, time, urllib.error, urllib.request
+import json, os, platform, re, shutil, subprocess, sys, time, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +17,13 @@ MAX_OUTPUT = 256 * 1024
 RUNS: dict[str, dict[str, Any]] = {}
 IGNORE = {".git", "node_modules", "target", ".venv", "__pycache__", "vendor", ".mnogovid"}
 PROFILE_NAME = ".mnogovid-code-scanner.json"
+PACKAGE_MANAGER_TEMPLATES = {
+    "apt-get":"sudo apt-get install <package>", "dnf":"sudo dnf install <package>",
+    "yum":"sudo yum install <package>", "pacman":"sudo pacman -S <package>",
+    "zypper":"sudo zypper install <package>", "apk":"sudo apk add <package>",
+    "pipx":"pipx install <package>", "cargo":"cargo install <package>",
+    "go":"go install <module>@latest", "npm":"npm install --global <package>",
+}
 ADAPTERS: dict[str, dict[str, Any]] = {
     "semgrep": {"category":"sast","exe":"semgrep","network":True,"cmd":lambda p:["--json","--config","auto",str(p)]},
     "gosec": {"category":"sast","exe":"gosec","network":False,"cmd":lambda p:["-fmt=json","./..."],"cwd":True},
@@ -97,7 +104,8 @@ def plan(root: Path) -> dict[str,Any]:
     for ident in ids:
         item=ADAPTERS[ident]; exe=shutil.which(item["exe"])
         runs.append({"adapter":ident,"category":item["category"],"executable":item["exe"],"available":bool(exe),"requiresNetwork":item["network"],"execution":"not_executed"})
-    return {**found,"recommendedAdapters":ids,"runs":runs,"networkUsed":False,"processStarted":False}
+    guide={"platform":platform.platform(),"packageManagers":[{"name":name,"commandTemplate":template} for name,template in PACKAGE_MANAGER_TEMPLATES.items() if shutil.which(name)],"missingAdapters":[{"adapter":run["adapter"],"executable":run["executable"]} for run in runs if not run["available"]],"note":"Choose a package manager available on this host and verify the scanner package name before installing. The plugin never installs utilities."}
+    return {**found,"recommendedAdapters":ids,"runs":runs,"installationGuide":guide,"networkUsed":False,"processStarted":False}
 
 def bootstrap(root: Path, create_profile: bool) -> dict[str,Any]:
     if not isinstance(create_profile,bool): raise ValueError("createProfile must be boolean when supplied")

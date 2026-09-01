@@ -7,19 +7,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "system_mcp.py"
 INIT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "init.py"
-REMOTE_CONFIG_PATH = Path(__file__).resolve().parents[1] / "scripts" / "remote_mcp_config.py"
 SPEC = importlib.util.spec_from_file_location("system_mcp", MODULE_PATH)
 assert SPEC and SPEC.loader
 system_mcp = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(system_mcp)
-REMOTE_SPEC = importlib.util.spec_from_file_location("remote_mcp_config", REMOTE_CONFIG_PATH)
-assert REMOTE_SPEC and REMOTE_SPEC.loader
-remote_mcp_config = importlib.util.module_from_spec(REMOTE_SPEC)
-REMOTE_SPEC.loader.exec_module(remote_mcp_config)
 
 
 def payload(result: dict) -> dict:
@@ -33,6 +29,7 @@ class SystemMcpTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         system_mcp.RUNS.clear()
+        system_mcp.REMOTE_DEPLOYMENTS.clear()
         self.temp.cleanup()
 
     def test_plan_is_non_executing(self) -> None:
@@ -40,6 +37,13 @@ class SystemMcpTests(unittest.TestCase):
         self.assertFalse(value["processStarted"])
         self.assertTrue(value["runs"])
         self.assertIn("host", value)
+        self.assertIn("installationGuide", value)
+
+    def test_installation_guidance_is_per_detected_host(self) -> None:
+        runs = [{"adapter": "lynis", "executable": "lynis", "available": False}]
+        guide = system_mcp.installation_guide({"packageManagers": ["apt-get", "pacman"]}, runs)
+        self.assertEqual(guide["missingAdapters"][0]["candidatePackages"]["apt-get"], "lynis")
+        self.assertEqual(guide["packageManagers"][0]["commandTemplate"], "sudo apt-get install <package>")
 
     def test_bootstrap_creates_profile_only_after_explicit_request(self) -> None:
         first = payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root}))
@@ -189,30 +193,74 @@ class SystemMcpTests(unittest.TestCase):
         names = {item["id"] for item in catalog["adapters"]}
         self.assertIn("journal-warnings", names)
         tools = {item["name"] for item in system_mcp.TOOLS}
-        self.assertTrue({"system_bootstrap", "system_ingest", "system_advisory_lookup"}.issubset(tools))
+        self.assertTrue({"system_bootstrap", "system_ingest", "system_advisory_lookup", "system_remote_prepare", "system_remote_authorize_deploy", "system_remote_deploy_runner", "system_remote_call"}.issubset(tools))
 
     def test_cross_surface_assets_exist(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        for relative in ("claude-code.mcp.json.example", "opencode.json.example", "remote-mcp.toml.example", "commands/system-scan.md", "adapters/openai-codex/agents/system-orchestrator.md", "adapters/claude/agents/system-triage.md", "adapters/opencode/.opencode/commands/system-scan.md"):
+        for relative in ("claude-code.mcp.json.example", "opencode.json.example", "bin/mnogovid-system-scanner.mjs", "commands/system-scan.md", "adapters/openai-codex/agents/system-orchestrator.md", "adapters/claude/agents/system-triage.md", "adapters/opencode/.opencode/commands/system-scan.md"):
             self.assertTrue((root / relative).is_file(), relative)
 
-    def test_remote_mcp_config_is_static_and_alias_bound(self) -> None:
-        config = remote_mcp_config.render("prod-audit", "/opt/mnogovid-system-scanner/scripts/system_mcp.py")
-        self.assertIn("[mcp_servers.mnogovid_system_prod_audit]", config)
-        self.assertIn('"BatchMode=yes"', config)
-        self.assertIn('"ClearAllForwardings=yes"', config)
-        self.assertIn('"ForwardAgent=no"', config)
-        self.assertIn('"StrictHostKeyChecking=yes"', config)
+    def test_npm_mcp_binary_proxies_to_the_python_server(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        self.assertEqual(package["name"], "@bergabruh/system-scanner")
+        self.assertEqual(package["bin"]["mnogovid-system-scanner"], "./bin/mnogovid-system-scanner.mjs")
+        self.assertIn("bin/*.mjs", package["files"])
+        self.assertIn("scripts/*.py", package["files"])
+        entrypoint = root / "bin" / "mnogovid-system-scanner.mjs"
+        self.assertTrue(entrypoint.is_file())
+        entrypoint_text = entrypoint.read_text(encoding="utf-8")
+        self.assertIn("python3", entrypoint_text)
+        self.assertIn("system_mcp.py", entrypoint_text)
+        request = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        completed = subprocess.run(["node", str(entrypoint)], input=json.dumps(request) + "\n", text=True, capture_output=True, timeout=5, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        response = json.loads(completed.stdout)
+        self.assertEqual(response["id"], 1)
+        self.assertIn("tools", response["result"])
+
+    @patch.object(system_mcp, "remote_probe")
+    @patch.object(system_mcp, "deploy_remote_runner")
+    def test_remote_runner_requires_one_time_deployment_ticket(self, deploy, probe) -> None:
+        probe.return_value = {"sshAlias": "prod-audit", "pythonPath": "/usr/bin/python3", "home": "/home/audit", "runnerExists": False, "version": None}
+        ticket = system_mcp.remote_deployment_ticket("prod-audit", True)
+        result = system_mcp.consume_remote_deployment("prod-audit", ticket["deploymentId"])
+        deploy.assert_called_once_with("prod-audit", "/usr/bin/python3")
+        self.assertEqual(result["deployment"], "updated")
         with self.assertRaises(ValueError):
-            remote_mcp_config.render("prod;evil", "/opt/mnogovid-system-scanner/scripts/system_mcp.py")
+            system_mcp.consume_remote_deployment("prod-audit", ticket["deploymentId"])
+
+    @patch.object(system_mcp, "remote_probe")
+    @patch.object(system_mcp, "ssh_run")
+    def test_remote_call_forwards_only_allowlisted_mcp_operation(self, ssh, probe) -> None:
+        probe.return_value = {"sshAlias": "prod-audit", "pythonPath": "/usr/bin/python3", "home": "/home/audit", "runnerExists": True, "version": system_mcp.REMOTE_RUNNER_RELEASE}
+        ssh.return_value = subprocess.CompletedProcess([], 0, json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"isError": False, "content": []}}), "")
+        result = system_mcp.remote_call("prod-audit", "system_plan", {"reportDirectory": "/home/audit"})
+        self.assertFalse(result["isError"])
         with self.assertRaises(ValueError):
-            remote_mcp_config.render("prod-audit", "/opt/../etc/passwd")
+            system_mcp.remote_call("prod-audit", "system_remote_deploy_runner", {})
+        probe.return_value["version"] = "old"
+        with self.assertRaises(ValueError):
+            system_mcp.remote_call("prod-audit", "system_plan", {"reportDirectory": "/home/audit"})
+
+    def test_remote_alias_must_be_declared_in_private_ssh_config(self) -> None:
+        home = Path(self.root) / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        ssh_dir.chmod(0o700)
+        config = ssh_dir / "config"
+        config.write_text("Host prod-audit\n  HostName example.invalid\n", encoding="utf-8")
+        config.chmod(0o600)
+        with patch.object(system_mcp.Path, "home", return_value=home):
+            self.assertEqual(system_mcp.validate_ssh_alias("prod-audit"), "prod-audit")
+            with self.assertRaises(ValueError):
+                system_mcp.validate_ssh_alias("example.invalid")
 
     def test_unified_command_uses_chat_consent_and_mode_selection(self) -> None:
         root = Path(__file__).resolve().parents[1]
         command = (root / "commands" / "system-scan.md").read_text(encoding="utf-8")
         self.assertNotIn("argument-hint:", command)
-        self.assertIn("May I use `<server-name>`", command)
+        self.assertIn("May I connect read-only", command)
         self.assertIn("Do not require command arguments", command)
         self.assertIn("Adapters + AI triage", command)
         self.assertIn("system_bootstrap", command)
