@@ -256,6 +256,13 @@ class SystemMcpTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 system_mcp.validate_ssh_alias("example.invalid")
 
+    def test_ssh_remote_args_preserve_shell_boundaries(self) -> None:
+        argv = system_mcp.ssh_argv("prod-audit", ["sh", "-lc", "command -v python3"])
+        remote_command = " ".join(argv[11:])
+        completed = subprocess.run(["sh", "-lc", remote_command], capture_output=True, text=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertTrue(completed.stdout.strip(), remote_command)
+
     def test_unified_command_uses_chat_consent_and_mode_selection(self) -> None:
         root = Path(__file__).resolve().parents[1]
         command = (root / "commands" / "system-scan.md").read_text(encoding="utf-8")

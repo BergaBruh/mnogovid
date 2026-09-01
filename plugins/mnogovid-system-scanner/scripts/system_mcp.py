@@ -15,6 +15,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -750,7 +751,7 @@ def validate_ssh_alias(value: Any) -> str:
 
 
 def ssh_argv(alias: str, remote_args: list[str]) -> list[str]:
-    return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "StrictHostKeyChecking=yes", alias, *remote_args]
+    return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "StrictHostKeyChecking=yes", alias, " ".join(shlex.quote(arg) for arg in remote_args)]
 
 
 def ssh_run(alias: str, remote_args: list[str], *, input_text: str | None = None, timeout: int = 30) -> subprocess.CompletedProcess[str]:
