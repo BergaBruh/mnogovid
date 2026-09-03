@@ -64,8 +64,9 @@ rejected:
 /mnogovid-system-scanner:system-scan
 ```
 
-The command asks only for that alias/target. It asks for explicit connection
-approval before reading `~/.ssh/config` or connecting. It then connects over
+The command asks the user to provide the alias/target; it never enumerates
+aliases by reading `~/.ssh/config`. It asks for explicit connection approval
+before validating an alias, reading `~/.ssh/config`, or connecting. It then connects over
 SSH stdio with agent and forwarding disabled, validates the host key, finds `python3`, and checks the
 fixed runner path under `~/.local/share/mnogovid-system-scanner`. If the runner
 is absent or outdated, it separately asks before deploying or updating it.

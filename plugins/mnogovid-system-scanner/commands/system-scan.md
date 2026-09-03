@@ -7,8 +7,10 @@ Run one unified system-scanner workflow. Do not require command arguments.
 Before scanner-mode selection, complete bootstrap for the selected target.
 
 1. **Target:** “Analyze this local host, or a remote SSH alias/target?” If
-   remote is chosen, accept either a configured alias or a complete
-   `user@host` target. A complete target does not read `~/.ssh/config`. Then
+   remote is chosen, ask the user to provide either a configured alias or a
+   complete `user@host` target. Never read `~/.ssh/config` to discover or list
+   aliases, and never use a native file-read tool for that purpose. A complete
+   target does not read `~/.ssh/config`. After the user supplies the target,
    ask: “May I connect read-only to `<ssh-target>` and inspect whether the
    Mnogovid runner is ready?” After yes,
    call `system_remote_prepare` with `approveConnection=true`. Do not request a remote plugin path or Python

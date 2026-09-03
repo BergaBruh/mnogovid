@@ -342,6 +342,7 @@ class SystemMcpTests(unittest.TestCase):
         command = (root / "commands" / "system-scan.md").read_text(encoding="utf-8")
         self.assertNotIn("argument-hint:", command)
         self.assertIn("May I connect read-only", command)
+        self.assertIn("Never read `~/.ssh/config` to discover or list", command)
         self.assertIn("Do not require command arguments", command)
         self.assertIn("Adapters + AI triage", command)
         self.assertIn("system_bootstrap", command)

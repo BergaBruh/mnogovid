@@ -10,7 +10,8 @@ summaries bounded, previewed, and tied to the current `runId`. Do not install
 tools or alter the host.
 
 For remote work, accept an SSH alias or a complete `user@host` target (which
-does not read `~/.ssh/config`). After explicit connection consent, probe
+does not read `~/.ssh/config`). Never read the local SSH config to enumerate
+aliases. After explicit connection consent, probe
 readiness read-only with `approveConnection=true`;
 remote runner deployment needs a separately approved one-time ticket. Proxy all
 later lifecycle calls through `system_remote_call`, poll returned `jobId`

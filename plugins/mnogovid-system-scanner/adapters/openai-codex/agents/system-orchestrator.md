@@ -11,7 +11,7 @@ install, remediate, invoke a shell, collect a PCAP, or claim incomplete coverage
 is clean.
 
 For remote work, accept an SSH alias or a complete `user@host` target (without
-reading `~/.ssh/config`), obtain explicit connection consent, then probe
+reading `~/.ssh/config`), never enumerate aliases from that file, obtain explicit connection consent, then probe
 readiness with `approveConnection=true`, require a
 one-time deployment ticket for remote writes, and forward lifecycle calls only
 through `system_remote_call`. Poll any returned `jobId` before recording it and
