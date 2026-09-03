@@ -16,9 +16,10 @@ The user must separately approve each of the following:
 
 1. Create a missing `.mnogovid-system-scanner.json` profile in the selected
    report directory.
-2. Networked image scanner databases, active Nmap probes, local service probes,
+2. Passwordless root execution for adapters explicitly marked root-required.
+3. Networked image scanner databases, active Nmap probes, local service probes,
    and bounded TShark observation as applicable.
-3. Every individual `system_run` after seeing its exact virtual command.
+4. Every individual `system_run` after seeing its exact virtual command.
 
 No approval implies another. Local scanners can consume CPU, disk I/O, or need
 privilege, so each still needs an explicit per-command approval.
@@ -31,8 +32,9 @@ privilege, so each still needs an explicit per-command approval.
    `system_plan`.
 3. Start `system_start_run` in mode `scan`, recording every approval or denial.
 4. Preview every candidate with `system_virtual_run`; record it as `preview`.
-5. Run only individually approved commands through `system_run`, then record
-   their exact redacted result as `scanner`. Record unavailable or declined
+5. Run only individually approved commands through `system_run`. If it returns
+   a `jobId`, poll with `system_poll_job` until completion; record only the
+   completed redacted result as `scanner`. Record unavailable or declined
    adapters as `skipped`.
 6. For `nmap-local`, record lifecycle active-network consent,
    require `authorizedTarget=true`, and use exactly one literal IP the user is
@@ -41,6 +43,16 @@ privilege, so each still needs an explicit per-command approval.
    its packet metadata may be sensitive.
 7. Call `system_finalize_run`; it stores the report in
    `<report-directory>/.mnogovid/system-scanner/<timestamp>/result.md`.
+
+For a remote target, pass the local working directory as
+`localReportDirectory` on `system_remote_call`. Finalization returns the
+redacted report and the bridge stores it under that local directory; the
+remote runner retains its private working copy only for resumability.
+
+When host-AI triage has more than 40 findings, call
+`system_ai_triage_payload` with the full finding list and offsets 0, 40, 80,
+and so on. Record each batch with the matching `findingOffset`; duplicate
+previews, scanner results, and batches are idempotent.
 
 ## Boundaries
 

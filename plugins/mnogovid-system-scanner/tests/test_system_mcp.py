@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "system_mcp.py"
@@ -54,7 +56,8 @@ class SystemMcpTests(unittest.TestCase):
         repeated = payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root}))
         self.assertEqual(repeated["profile"]["action"], "verified")
 
-    def test_virtual_listener_preview_never_starts_process(self) -> None:
+    @patch.object(system_mcp, "trusted_executable", side_effect=lambda name: "/usr/bin/" + name)
+    def test_virtual_listener_preview_never_starts_process(self, trusted) -> None:
         value = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "listeners"}))
         self.assertFalse(value["processStarted"])
         self.assertEqual(value["execution"], "virtual")
@@ -68,7 +71,8 @@ class SystemMcpTests(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("authorizedTarget", payload(result)["error"])
 
-    def test_traffic_preview_is_bounded(self) -> None:
+    @patch.object(system_mcp, "trusted_executable", side_effect=lambda name: "/usr/bin/" + name)
+    def test_traffic_preview_is_bounded(self, trusted) -> None:
         result = system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "tshark-summary", "interface": "eth0", "durationSeconds": 301})
         self.assertTrue(result["isError"])
         self.assertIn("5 through 300", payload(result)["error"])
@@ -113,7 +117,7 @@ class SystemMcpTests(unittest.TestCase):
     def test_lifecycle_writes_redacted_report_without_scanning(self) -> None:
         started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {"profileWrite": False, "activeNetwork": False, "trafficCapture": False, "aiTriage": False, "agentReview": False}}))
         run_id = started["runId"]
-        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "listeners"}))
+        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "journal-warnings"}))
         system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "preview", "entry": preview})
         system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "skipped", "entry": {"adapter": "clamav", "reason": "not approved"}})
         final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
@@ -153,6 +157,66 @@ class SystemMcpTests(unittest.TestCase):
         result = system_mcp.call("system_run", {"reportDirectory": self.root, "runId": started["runId"], "adapter": "mysql-status"})
         self.assertTrue(result["isError"])
         self.assertIn("service-probe consent", payload(result)["error"])
+
+    @patch.object(system_mcp, "trusted_executable", side_effect=lambda name: "/usr/bin/" + name)
+    def test_root_required_adapter_needs_lifecycle_consent(self, trusted) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {"rootPrivileges": False}}))
+        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "rkhunter"}))
+        self.assertTrue(preview["requiresRoot"])
+        self.assertEqual(preview["command"]["argv"][:2], ["/usr/bin/sudo", "-n"])
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": started["runId"], "kind": "preview", "entry": preview})
+        result = system_mcp.call("system_run", {"reportDirectory": self.root, "runId": started["runId"], "adapter": "rkhunter"})
+        self.assertTrue(result["isError"])
+        self.assertIn("root-privilege consent", payload(result)["error"])
+
+    @patch.object(system_mcp, "trusted_executable", side_effect=lambda name: "/usr/bin/" + name)
+    @patch.object(system_mcp.shutil, "which")
+    @patch.object(system_mcp.subprocess, "Popen")
+    def test_long_root_adapter_starts_job_without_waiting(self, popen, which, trusted) -> None:
+        which.side_effect = lambda name: "/usr/bin/" + name
+        process = MagicMock()
+        process.pid = 12345
+        popen.return_value = process
+        result = system_mcp.start_job(Path(self.root), {"adapter": "rkhunter"})
+        self.assertEqual(result["resultStatus"], "running")
+        self.assertIn("jobId", result)
+        self.assertEqual(result["command"]["argv"][:2], ["/usr/bin/sudo", "-n"])
+        job_dir = Path(self.root) / ".mnogovid" / "system-scanner" / result["jobId"]
+        self.assertTrue((job_dir / "job-state.json").is_file())
+        self.assertTrue((job_dir / "launch").is_file())
+
+    def test_durable_background_job_can_be_polled_after_start(self) -> None:
+        adapter = "test-background"
+        system_mcp.ADAPTERS[adapter] = {"category": "test", "exe": sys.executable, "network": False, "traffic": False, "background": True, "timeout": 5, "argv": lambda _: ["-c", "print('job evidence')"]}
+        try:
+            started = system_mcp.start_job(Path(self.root), {"adapter": adapter})
+            for _ in range(30):
+                result = system_mcp.poll_job(Path(self.root), started["jobId"])
+                if result["resultStatus"] != "running": break
+                time.sleep(0.05)
+            self.assertEqual(result["resultStatus"], "complete")
+            self.assertEqual(result["jobId"], started["jobId"])
+        finally:
+            system_mcp.ADAPTERS.pop(adapter, None)
+
+    def test_background_timeout_terminates_descendant_process_group(self) -> None:
+        adapter = "test-timeout-group"
+        child_code = "import time; time.sleep(30)"
+        parent_code = "import subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c',%r]); print(p.pid,flush=True); time.sleep(30)" % child_code
+        system_mcp.ADAPTERS[adapter] = {"category": "test", "exe": sys.executable, "network": False, "traffic": False, "background": True, "timeout": 0.1, "argv": lambda _: ["-c", parent_code]}
+        try:
+            started = system_mcp.start_job(Path(self.root), {"adapter": adapter})
+            for _ in range(80):
+                result = system_mcp.poll_job(Path(self.root), started["jobId"])
+                if result["resultStatus"] != "running": break
+                time.sleep(0.05)
+            self.assertEqual(result["resultStatus"], "failed")
+            job_dir = Path(self.root) / ".mnogovid" / "system-scanner" / started["jobId"]
+            child_pid = int((job_dir / "stdout.log").read_text(encoding="utf-8").strip())
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
+        finally:
+            system_mcp.ADAPTERS.pop(adapter, None)
 
     def test_init_refuses_a_symlinked_profile(self) -> None:
         profile = Path(self.root) / ".mnogovid-system-scanner.json"
@@ -256,6 +320,16 @@ class SystemMcpTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 system_mcp.validate_ssh_alias("example.invalid")
 
+    def test_explicit_ssh_target_skips_local_config_lookup(self) -> None:
+        with patch.object(system_mcp.Path, "home", side_effect=AssertionError("config must not be read")):
+            self.assertEqual(system_mcp.validate_ssh_alias("audit@example.invalid"), "audit@example.invalid")
+
+    def test_remote_prepare_requires_connection_consent_before_config(self) -> None:
+        with patch.object(system_mcp.Path, "home", side_effect=AssertionError("config must not be read")):
+            result = system_mcp.call("system_remote_prepare", {"sshAlias": "audit@example.invalid", "approveConnection": False})
+        self.assertTrue(result["isError"])
+        self.assertIn("approval", payload(result)["error"])
+
     def test_ssh_remote_args_preserve_shell_boundaries(self) -> None:
         argv = system_mcp.ssh_argv("prod-audit", ["sh", "-lc", "command -v python3"])
         remote_command = " ".join(argv[11:])
@@ -304,6 +378,58 @@ class SystemMcpTests(unittest.TestCase):
         self.assertIn("unexpected listener", document)
         self.assertIn("0.0.0.0:9000", document)
         self.assertIn("Verify service ownership.", document)
+
+    def test_lifecycle_and_preview_retries_are_idempotent(self) -> None:
+        consent = {"rootPrivileges": False}
+        first = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": consent}))
+        resumed = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": consent}))
+        self.assertEqual(first["runId"], resumed["runId"])
+        self.assertTrue(resumed["resumed"])
+        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "journal-warnings"}))
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": first["runId"], "kind": "preview", "entry": preview})
+        duplicate = payload(system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": first["runId"], "kind": "preview", "entry": preview}))
+        self.assertTrue(duplicate["duplicate"])
+
+    @patch.object(system_mcp, "start_job")
+    def test_execution_retry_reuses_previous_result(self, start_job) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "consent": {}}))
+        run_id = started["runId"]
+        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "journal-warnings"}))
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "preview", "entry": preview})
+        fake = {**preview, "execution": "executed", "processStarted": True, "resultStatus": "complete", "exitCode": 0, "findings": [], "observations": [], "counts": {"findings": 0, "observations": 0}}
+        start_job.return_value = fake
+        first = payload(system_mcp.call("system_run", {"reportDirectory": self.root, "runId": run_id, "adapter": "journal-warnings"}))
+        second = payload(system_mcp.call("system_run", {"reportDirectory": self.root, "runId": run_id, "adapter": "journal-warnings"}))
+        self.assertEqual(first, second)
+        start_job.assert_called_once()
+
+    def test_ai_triage_batches_merge_and_accept_named_confidence(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan-ai", "consent": {"aiTriage": True}}))
+        run_id = started["runId"]
+        scanner = {"adapter": "listeners", "command": {"argv": ["ss", "-H", "-lntup"], "currentDir": self.root}, "resultStatus": "complete", "exitCode": 0, "findings": [{"severity": "high", "title": "one"}, {"severity": "medium", "title": "two"}], "observations": []}
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "scanner", "entry": scanner})
+        first = {"findingOffset": 0, "findingNotes": [{"findingIndex": 0, "classification": "needs_review", "confidence": "medium", "note": "check one"}]}
+        second = {"findingOffset": 1, "findingNotes": [{"findingIndex": 0, "classification": "false_positive", "confidence": "high", "note": "check two"}]}
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "host_ai_triage", "entry": first})
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "host_ai_triage", "entry": second})
+        final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
+        document = Path(final["path"]).read_text(encoding="utf-8")
+        self.assertIn("check one", document)
+        self.assertIn("check two", document)
+
+    def test_remote_finalize_is_mirrored_to_local_directory(self) -> None:
+        response = {"result": {"isError": False, "content": [{"type": "text", "text": json.dumps({"reportId": "123", "path": "/remote/result.md", "reportText": "# remote report\n"})}]}}
+        mirrored = system_mcp.mirror_remote_report(response, self.root)
+        payload_value = json.loads(mirrored["content"][0]["text"])
+        self.assertTrue(payload_value["storedLocally"])
+        self.assertEqual(Path(payload_value["path"]).read_text(encoding="utf-8"), "# remote report\n")
+        self.assertEqual(payload_value["remotePath"], "/remote/result.md")
+
+    def test_trusted_ai_payload_declares_expanded_non_secret_mode(self) -> None:
+        strict = payload(system_mcp.call("system_ai_triage_payload", {"findings": [{"title": "path"}]}))
+        trusted = payload(system_mcp.call("system_ai_triage_payload", {"findings": [{"title": "path"}], "trustedAi": True}))
+        self.assertEqual(strict["privacyMode"], "strict-redacted")
+        self.assertEqual(trusted["privacyMode"], "trusted-ai")
 
 
 if __name__ == "__main__":

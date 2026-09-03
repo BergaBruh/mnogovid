@@ -102,7 +102,7 @@ Each permission is independent:
 | Profile creation | Create a missing `.mnogovid-code-scanner.json`; an invalid profile stops the workflow. |
 | Network consent | Run a network-dependent scanner after it is separately approved. It is a policy gate, not network isolation. |
 | Per-scanner approval | Start one specific scanner process after its command preview and recorded lifecycle `runId`. |
-| AI sharing | Send only a bounded, redacted findings payload to the host AI. |
+| AI sharing | Send a bounded payload to the host AI; `trustedAi` may expand non-secret diagnostics after separate consent, while secrets remain scrubbed. |
 | Agent review | Give the same bounded evidence and recorded AI triage to `security-triage`. |
 
 No permission implies another. A whole-workspace authorization does not permit
@@ -184,8 +184,9 @@ are loaded.
 ## Safety model
 
 Only allowlisted scanner executables run, always as an argv array without a
-shell. AI receives only the redacted payload produced by the MCP server. OSV
-advisory lookup requires separate network approval. The plugin never performs
-automatic remediation.
+shell. AI receives the bounded payload produced by the MCP server. Strict-
+redacted mode is the default; `trustedAi` may expand non-secret diagnostics
+after separate consent. OSV advisory lookup requires separate network
+approval. The plugin never performs automatic remediation.
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE).

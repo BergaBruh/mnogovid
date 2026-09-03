@@ -29,8 +29,10 @@ inspected.
 | Live traffic metadata (bounded) | TShark, 5–300 seconds, no packet file |
 
 Missing executables are recorded as coverage gaps. The plugin does not attempt
-to install them or elevate privilege. Some checks need root access and will
-report failure rather than invoke `sudo`.
+to install them. Root-required adapters (including full-filesystem ClamAV,
+Lynis, AIDE, firewall/audit inspection, listener ownership, rootkit checks, and
+TShark) use non-interactive `sudo -n` only after separate consent; if
+passwordless sudo is unavailable, the result is a coverage gap.
 
 ## Run
 
@@ -52,19 +54,26 @@ separately.
 
 ### Remote server over SSH-stdio MCP
 
-Define an exact `Host` alias directly in `~/.ssh/config` for a dedicated audit
-account, then use the same unified command and choose the remote option. Raw
-hostnames and wildcard aliases are rejected:
+For the usual setup, define an exact `Host` alias directly in `~/.ssh/config`
+for a dedicated audit account, then use the same unified command and choose
+the remote option. You may instead enter a complete `user@host` target; that
+form does not read `~/.ssh/config`. Raw hostnames and wildcard aliases are
+rejected:
 
 ```text
 /mnogovid-system-scanner:system-scan
 ```
 
-The command asks only for that alias. It connects over SSH stdio with agent and
-forwarding disabled, validates the host key, finds `python3`, and checks the
+The command asks only for that alias/target. It asks for explicit connection
+approval before reading `~/.ssh/config` or connecting. It then connects over
+SSH stdio with agent and forwarding disabled, validates the host key, finds `python3`, and checks the
 fixed runner path under `~/.local/share/mnogovid-system-scanner`. If the runner
 is absent or outdated, it separately asks before deploying or updating it.
 There is no remote MCP port, remote path, Python path, or local TOML to manage.
+The workflow passes the current local report directory to the bridge. Scanner
+state is kept privately on the remote host while the finalized redacted
+`result.md` is copied into the local `.mnogovid/system-scanner/<timestamp>/`
+directory and returned with `storedLocally: true`.
 
 ### Claude Code
 
@@ -150,9 +159,17 @@ declined adapter is a coverage gap—not a clean result.
 
 ## AI and independent review
 
-The AI and independent-review modes create bounded, secret-redacted payloads
-only after their own separate approvals. Both assessments are advisory and
-remain distinct from the scanner evidence.
+The AI and independent-review modes create bounded payloads only after their
+own separate approvals. Strict-redacted mode is the default; `trustedAi` can
+expand non-secret diagnostics for the selected AI. Both assessments are
+advisory and remain distinct from the scanner evidence.
+The lifecycle also has a separate `trustedAi` consent. When enabled, the
+selected AI can receive expanded non-secret diagnostics; credentials, tokens,
+private keys, and authentication headers are still scrubbed.
+
+AI triage payloads are capped at 40 findings per call. Use the same full
+finding list with `findingOffset` batches; the server merges them, ignores
+duplicate records, and requires complete index coverage before finalization.
 
 Use `system_ingest` to normalize a pre-existing private local JSON or SARIF
 report inside the selected report directory without starting a process.

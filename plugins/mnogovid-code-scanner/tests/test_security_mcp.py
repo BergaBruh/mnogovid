@@ -86,6 +86,13 @@ class SecurityMcpBootstrapTests(unittest.TestCase):
         self.assertTrue(result["isError"])
         self.assertIn("identical", payload(result)["error"])
 
+    def test_trusted_ai_payload_is_explicit_and_still_secret_scrubbed(self) -> None:
+        strict = payload(security_mcp.call("security_ai_triage_payload", {"findings": [{"title": "path", "token": "do-not-leak"}]}))
+        trusted = payload(security_mcp.call("security_ai_triage_payload", {"findings": [{"title": "path", "token": "do-not-leak"}], "trustedAi": True}))
+        self.assertEqual(strict["privacyMode"], "strict-redacted")
+        self.assertEqual(trusted["privacyMode"], "trusted-ai")
+        self.assertNotIn("do-not-leak", json.dumps(trusted))
+
 
 if __name__ == "__main__":
     unittest.main()

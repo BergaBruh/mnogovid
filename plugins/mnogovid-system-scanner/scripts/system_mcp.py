@@ -16,6 +16,7 @@ import platform
 import re
 import secrets
 import shlex
+import signal
 import shutil
 import stat
 import subprocess
@@ -29,13 +30,15 @@ from typing import Any
 
 MAX_OUTPUT = 256 * 1024
 RUNS: dict[str, dict[str, Any]] = {}
+JOBS: dict[str, dict[str, Any]] = {}
 REMOTE_DEPLOYMENTS: dict[str, dict[str, Any]] = {}
 PROFILE_NAME = ".mnogovid-system-scanner.json"
 REMOTE_RUNNER_DIR = "~/.local/share/mnogovid-system-scanner"
 REMOTE_RUNNER_SCRIPT = REMOTE_RUNNER_DIR + "/system_mcp.py"
 REMOTE_RUNNER_VERSION = REMOTE_RUNNER_DIR + "/version"
-REMOTE_RUNNER_RELEASE = "2.0.2"
+REMOTE_RUNNER_RELEASE = "2.1.0"
 REMOTE_TIMEOUT = 3600
+TRUSTED_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/sbin", "/usr/local/bin")
 
 PACKAGE_MANAGER_TEMPLATES = {
     "apt-get": "sudo apt-get install <package>",
@@ -72,29 +75,29 @@ def _fixed(*argv: str) -> list[str]:
 
 
 ADAPTERS: dict[str, dict[str, Any]] = {
-    "lynis": {"category": "hardening", "exe": "lynis", "network": False, "traffic": False, "timeout": 900, "argv": lambda _: _fixed("audit", "system", "--no-colors")},
-    "clamav": {"category": "malware", "exe": "clamscan", "network": False, "traffic": False, "timeout": 3600, "argv": lambda _: _fixed("--recursive", "--infected", "--no-summary", "--exclude-dir=^/proc", "--exclude-dir=^/sys", "--exclude-dir=^/dev", "/")},
-    "rkhunter": {"category": "rootkit", "exe": "rkhunter", "network": False, "traffic": False, "timeout": 1800, "argv": lambda _: _fixed("--check", "--skip-keypress", "--report-warnings-only")},
-    "chkrootkit": {"category": "rootkit", "exe": "chkrootkit", "network": False, "traffic": False, "timeout": 1800, "argv": lambda _: _fixed()},
-    "aide": {"category": "integrity", "exe": "aide", "network": False, "traffic": False, "timeout": 1800, "argv": lambda _: _fixed("--check")},
+    "lynis": {"category": "hardening", "exe": "lynis", "network": False, "traffic": False, "requiresRoot": True, "background": True, "timeout": 900, "argv": lambda _: _fixed("audit", "system", "--no-colors")},
+    "clamav": {"category": "malware", "exe": "clamscan", "network": False, "traffic": False, "requiresRoot": True, "background": True, "timeout": 3600, "argv": lambda _: _fixed("--recursive", "--infected", "--no-summary", "--exclude-dir=^/proc", "--exclude-dir=^/sys", "--exclude-dir=^/dev", "/")},
+    "rkhunter": {"category": "rootkit", "exe": "rkhunter", "network": False, "traffic": False, "requiresRoot": True, "background": True, "timeout": 1800, "argv": lambda _: _fixed("--check", "--skip-keypress", "--report-warnings-only")},
+    "chkrootkit": {"category": "rootkit", "exe": "chkrootkit", "network": False, "traffic": False, "requiresRoot": True, "background": True, "timeout": 1800, "argv": lambda _: _fixed()},
+    "aide": {"category": "integrity", "exe": "aide", "network": False, "traffic": False, "requiresRoot": True, "background": True, "timeout": 1800, "argv": lambda _: _fixed("--check")},
     "debsecan": {"category": "vulnerabilities", "exe": "debsecan", "network": False, "traffic": False, "timeout": 300, "argv": lambda _: _fixed("--format", "detail")},
-    "rpm-verify": {"category": "integrity", "exe": "rpm", "network": False, "traffic": False, "timeout": 900, "argv": lambda _: _fixed("-Va")},
-    "osquery": {"category": "inventory", "exe": "osqueryi", "network": False, "traffic": False, "timeout": 300, "argv": lambda _: _fixed("--json", "SELECT p.pid,p.name,p.path,p.uid FROM processes p WHERE p.on_disk = 0 OR p.path = ''; ")},
-    "listeners": {"category": "exposure", "exe": "ss", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("-H", "-lntup")},
-    "nftables": {"category": "firewall", "exe": "nft", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("list", "ruleset")},
+    "rpm-verify": {"category": "integrity", "exe": "rpm", "network": False, "traffic": False, "requiresRoot": True, "background": True, "timeout": 900, "argv": lambda _: _fixed("-Va")},
+    "osquery": {"category": "inventory", "exe": "osqueryi", "network": False, "traffic": False, "requiresRoot": True, "background": True, "timeout": 300, "argv": lambda _: _fixed("--json", "SELECT p.pid,p.name,p.path,p.uid FROM processes p WHERE p.on_disk = 0 OR p.path = ''; ")},
+    "listeners": {"category": "exposure", "exe": "ss", "network": False, "traffic": False, "requiresRoot": True, "timeout": 60, "argv": lambda _: _fixed("-H", "-lntup")},
+    "nftables": {"category": "firewall", "exe": "nft", "network": False, "traffic": False, "requiresRoot": True, "timeout": 60, "argv": lambda _: _fixed("list", "ruleset")},
     "systemd-enabled": {"category": "persistence", "exe": "systemctl", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("list-unit-files", "--state=enabled", "--no-legend", "--no-pager")},
     "systemd-timers": {"category": "persistence", "exe": "systemctl", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("list-timers", "--all", "--no-legend", "--no-pager")},
-    "iptables": {"category": "firewall", "exe": "iptables-save", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed()},
-    "ufw": {"category": "firewall", "exe": "ufw", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("status", "verbose")},
-    "audit-rules": {"category": "audit", "exe": "auditctl", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("-l")},
+    "iptables": {"category": "firewall", "exe": "iptables-save", "network": False, "traffic": False, "requiresRoot": True, "timeout": 60, "argv": lambda _: _fixed()},
+    "ufw": {"category": "firewall", "exe": "ufw", "network": False, "traffic": False, "requiresRoot": True, "timeout": 60, "argv": lambda _: _fixed("status", "verbose")},
+    "audit-rules": {"category": "audit", "exe": "auditctl", "network": False, "traffic": False, "requiresRoot": True, "timeout": 60, "argv": lambda _: _fixed("-l")},
     "journal-warnings": {"category": "logs", "exe": "journalctl", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("--no-pager", "--since", "24 hours ago", "--priority", "warning", "--output", "short-iso", "--lines", "1000")},
     "kernel-modules": {"category": "kernel", "exe": "lsmod", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed()},
     "docker-containers": {"category": "containers", "exe": "docker", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("ps", "--all", "--no-trunc", "--format", "{{json .}}")},
     "docker-security-options": {"category": "container-hardening", "exe": "docker", "network": False, "traffic": False, "sensitiveOutput": True, "timeout": 60, "argv": lambda _: _fixed("info", "--format", "{{json .SecurityOptions}}")},
     "docker-inspect": {"category": "container-hardening", "exe": "docker", "network": False, "traffic": False, "sensitiveOutput": True, "timeout": 60, "argv": lambda args: _docker_inspect_args(args)},
     "podman-containers": {"category": "containers", "exe": "podman", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("ps", "--all", "--no-trunc", "--format", "json")},
-    "debsums": {"category": "integrity", "exe": "debsums", "network": False, "traffic": False, "timeout": 1800, "argv": lambda _: _fixed("--changed")},
-    "nginx-config": {"category": "web-hardening", "exe": "nginx", "network": False, "traffic": False, "timeout": 60, "argv": lambda _: _fixed("-t")},
+    "debsums": {"category": "integrity", "exe": "debsums", "network": False, "traffic": False, "requiresRoot": True, "background": True, "timeout": 1800, "argv": lambda _: _fixed("--changed")},
+    "nginx-config": {"category": "web-hardening", "exe": "nginx", "network": False, "traffic": False, "requiresRoot": True, "timeout": 60, "argv": lambda _: _fixed("-t")},
     "mysql-status": {"category": "database-posture", "exe": "mysqladmin", "network": False, "traffic": False, "serviceProbe": True, "sensitiveOutput": True, "timeout": 15, "argv": lambda _: _fixed("--protocol=socket", "--connect-timeout=3", "status")},
     "postgres-status": {"category": "database-posture", "exe": "pg_isready", "network": False, "traffic": False, "serviceProbe": True, "sensitiveOutput": True, "timeout": 15, "argv": lambda _: _fixed("--timeout=3")},
     "redis-info": {"category": "database-posture", "exe": "redis-cli", "network": False, "traffic": False, "serviceProbe": True, "sensitiveOutput": True, "timeout": 15, "argv": lambda _: _fixed("--no-auth-warning", "INFO", "server")},
@@ -104,7 +107,7 @@ ADAPTERS: dict[str, dict[str, Any]] = {
     "grype-image": {"category": "container-vulnerabilities", "exe": "grype", "network": True, "traffic": False, "sensitiveOutput": True, "timeout": 1800, "argv": lambda args: _image_args("", ["-o", "json"], args)},
     "dockle-image": {"category": "container-hardening", "exe": "dockle", "network": False, "traffic": False, "sensitiveOutput": True, "timeout": 900, "argv": lambda args: _image_args("", ["--exit-code", "0"], args)},
     "nmap-local": {"category": "exposure", "exe": "nmap", "network": True, "traffic": False, "timeout": 900, "active": True, "argv": lambda args: _nmap_args(args)},
-    "tshark-summary": {"category": "traffic", "exe": "tshark", "network": False, "traffic": True, "timeout": 360, "argv": lambda args: _tshark_args(args)},
+    "tshark-summary": {"category": "traffic", "exe": "tshark", "network": False, "traffic": True, "requiresRoot": True, "background": True, "timeout": 360, "argv": lambda args: _tshark_args(args)},
 }
 
 
@@ -155,18 +158,19 @@ TOOLS = [
     {"name": "system_catalog", "description": "List allowlisted Linux host security, exposure, and traffic-observation adapters.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "system_doctor", "description": "Read local OS identity and check allowlisted executable availability. It does not execute a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_bootstrap", "description": "Check the system-scanner profile and local toolchain before a scan. Set createProfile=true only after explicit user approval to create a missing profile; it does not run a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "createProfile": {"type": "boolean"}}, "required": ["reportDirectory"], "additionalProperties": False}},
-    {"name": "system_remote_prepare", "description": "Read-only probe of one configured SSH alias: find Python and report whether the fixed Mnogovid remote runner is ready. It never deploys or scans.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}}, "required": ["sshAlias"], "additionalProperties": False}},
+    {"name": "system_remote_prepare", "description": "Read-only probe of one SSH alias or explicit user@host target. It requires approveConnection=true after the user explicitly authorizes the connection; only then may it inspect ~/.ssh/config or run SSH.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "approveConnection": {"type": "boolean"}}, "required": ["sshAlias", "approveConnection"], "additionalProperties": False}},
     {"name": "system_remote_authorize_deploy", "description": "Create a short-lived, one-time deployment ticket after the user explicitly approves deploying or updating the runner on the named SSH host. It does not write remotely.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "approveDeployment": {"type": "boolean"}}, "required": ["sshAlias", "approveDeployment"], "additionalProperties": False}},
     {"name": "system_remote_deploy_runner", "description": "Deploy or update the fixed remote runner under the remote user's ~/.local/share only with a valid one-time deployment ticket. It does not scan the host.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "deploymentId": {"type": "string"}}, "required": ["sshAlias", "deploymentId"], "additionalProperties": False}},
-    {"name": "system_remote_call", "description": "Forward one allowlisted system MCP operation through a prepared SSH alias. Remote scanner and consent enforcement remains inside the remote MCP server.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "operation": {"enum": ["system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"]}, "arguments": {"type": "object"}}, "required": ["sshAlias", "operation", "arguments"], "additionalProperties": False}},
+    {"name": "system_remote_call", "description": "Forward one allowlisted system MCP operation through a prepared SSH alias. Remote scanner and consent enforcement remains inside the remote MCP server; finalized reports are mirrored to the local report directory.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "operation": {"enum": ["system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_poll_job", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"]}, "arguments": {"type": "object"}, "localReportDirectory": {"type": "string"}}, "required": ["sshAlias", "operation", "arguments"], "additionalProperties": False}},
     {"name": "system_plan", "description": "Create a non-executing plan for all available Linux host scanners and observation tools.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_virtual_run", "description": "Preview one exact allowlisted command without starting it. nmap requires an explicitly authorized IP; image scanners need one image reference; docker-inspect needs one container ID or name.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "adapter"], "additionalProperties": False}},
-    {"name": "system_run", "description": "Execute one allowlisted local command without a shell. It requires a started lifecycle and identical preview; networked image scanners, active ports, traffic capture, and local service probes require matching lifecycle consent.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "runId", "adapter"], "additionalProperties": False}},
+    {"name": "system_run", "description": "Execute one allowlisted local command without a shell. It requires a started lifecycle and identical preview; root-required, networked, active, traffic, and service probes require matching lifecycle consent. Long adapters return a jobId immediately.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "runId", "adapter"], "additionalProperties": False}},
+    {"name": "system_poll_job", "description": "Poll a previously started long scanner job. It never starts another process; record its completed result with system_record_run.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "jobId": {"type": "string"}}, "required": ["reportDirectory", "jobId"], "additionalProperties": False}},
     {"name": "system_ingest", "description": "Normalize an existing private local JSON or SARIF host-security report inside the selected report directory without executing a program.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "report": {"type": "string"}, "format": {"enum": ["json", "sarif"]}, "adapter": {"type": "string"}}, "required": ["reportDirectory", "report", "format"], "additionalProperties": False}},
-    {"name": "system_start_run", "description": "Start a durable, consent-owned system assessment lifecycle. No scanner is executed and no report is written.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "mode": {"enum": ["scan", "scan-ai", "scan-agent"]}, "consent": {"type": "object", "properties": {"profileWrite": {"type": "boolean"}, "network": {"type": "boolean"}, "activeNetwork": {"type": "boolean"}, "trafficCapture": {"type": "boolean"}, "serviceProbe": {"type": "boolean"}, "aiTriage": {"type": "boolean"}, "agentReview": {"type": "boolean"}}, "additionalProperties": False}}, "required": ["reportDirectory", "mode", "consent"], "additionalProperties": False}},
+    {"name": "system_start_run", "description": "Start a durable, consent-owned system assessment lifecycle. No scanner is executed and no report is written.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "mode": {"enum": ["scan", "scan-ai", "scan-agent"]}, "consent": {"type": "object", "properties": {"profileWrite": {"type": "boolean"}, "rootPrivileges": {"type": "boolean"}, "network": {"type": "boolean"}, "activeNetwork": {"type": "boolean"}, "trafficCapture": {"type": "boolean"}, "serviceProbe": {"type": "boolean"}, "aiTriage": {"type": "boolean"}, "trustedAi": {"type": "boolean"}, "agentReview": {"type": "boolean"}}, "additionalProperties": False}}, "required": ["reportDirectory", "mode", "consent"], "additionalProperties": False}},
     {"name": "system_record_run", "description": "Append a preview, scanner result, skipped reason, host-AI triage, or independent review to a started system assessment.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "kind": {"enum": ["scanner", "preview", "skipped", "host_ai_triage", "agent_review"]}, "entry": {"type": "object"}}, "required": ["reportDirectory", "runId", "kind", "entry"], "additionalProperties": False}},
-    {"name": "system_finalize_run", "description": "Write the redacted Markdown report for a completed lifecycle under <reportDirectory>/.mnogovid/system-scanner/.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "initialization": {"type": "object"}, "doctor": {"type": "object"}, "plan": {"type": "object"}, "hostAiTriage": {"type": "object"}, "agentReview": {"type": "object"}}, "required": ["reportDirectory", "runId"], "additionalProperties": False}},
-    {"name": "system_ai_triage_payload", "description": "Produce a bounded redacted finding payload for host-model triage. It never contacts a model.", "inputSchema": {"type": "object", "properties": {"findings": {"type": "array"}}, "required": ["findings"], "additionalProperties": False}},
+    {"name": "system_finalize_run", "description": "Write the redacted Markdown report for a completed lifecycle under <reportDirectory>/.mnogovid/system-scanner/. Set includeReportText only for the remote bridge to mirror the finalized report locally.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "initialization": {"type": "object"}, "doctor": {"type": "object"}, "plan": {"type": "object"}, "hostAiTriage": {"type": "object"}, "agentReview": {"type": "object"}, "includeReportText": {"type": "boolean"}}, "required": ["reportDirectory", "runId"], "additionalProperties": False}},
+    {"name": "system_ai_triage_payload", "description": "Produce a bounded finding payload for host-model triage. It never contacts a model. trustedAi=true permits expanded non-secret context after explicit consent; secrets remain scrubbed. Use findingOffset when processing findings in batches.", "inputSchema": {"type": "object", "properties": {"findings": {"type": "array"}, "findingOffset": {"type": "integer", "minimum": 0}, "trustedAi": {"type": "boolean"}}, "required": ["findings"], "additionalProperties": False}},
     {"name": "system_advisory_lookup", "description": "Query OSV for one installed package version only after explicit network approval. It never installs or changes packages.", "inputSchema": {"type": "object", "properties": {"ecosystem": {"type": "string"}, "package": {"type": "string"}, "version": {"type": "string"}, "allowNetwork": {"type": "boolean"}}, "required": ["ecosystem", "package", "version", "allowNetwork"], "additionalProperties": False}},
 ]
 
@@ -330,8 +334,8 @@ def plan(_: Path) -> dict[str, Any]:
     runs = []
     for ident in recommend_host(found):
         spec = ADAPTERS[ident]
-        available = shutil.which(spec["exe"]) is not None
-        runs.append({"adapter": ident, "category": spec["category"], "executable": spec["exe"], "available": available, "requiresActiveNetwork": spec.get("network", False), "requiresTrafficCapture": spec.get("traffic", False), "execution": "not_executed"})
+        available = (trusted_executable(spec["exe"]) is not None if spec.get("requiresRoot") else shutil.which(spec["exe"]) is not None) and (not spec.get("requiresRoot") or trusted_executable("sudo") is not None)
+        runs.append({"adapter": ident, "category": spec["category"], "executable": spec["exe"], "available": available, "requiresRoot": spec.get("requiresRoot", False), "requiresNetwork": spec.get("network", False), "requiresActiveNetwork": spec.get("active", False), "requiresTrafficCapture": spec.get("traffic", False), "execution": "not_executed"})
     return {"host": found, "recommendedAdapters": recommend_host(found), "runs": runs, "installationGuide":installation_guide(found,runs), "processStarted": False, "networkUsed": False, "trafficCaptured": False}
 
 
@@ -387,7 +391,7 @@ def safe_json(value: Any) -> str:
 
 
 def normalize_consent(value: Any) -> dict[str, bool]:
-    keys = {"profileWrite", "network", "activeNetwork", "trafficCapture", "serviceProbe", "aiTriage", "agentReview"}
+    keys = {"profileWrite", "rootPrivileges", "network", "activeNetwork", "trafficCapture", "serviceProbe", "aiTriage", "trustedAi", "agentReview"}
     if not isinstance(value, dict) or set(value) - keys:
         raise ValueError("consent may contain only known boolean permission fields")
     if any(not isinstance(item, bool) for item in value.values()):
@@ -410,7 +414,7 @@ def normalize_entry(kind: str, entry: dict[str, Any], finding_count: int) -> dic
             raise ValueError(f"{kind} entry requires a bounded command argv")
         result: dict[str, Any] = {"adapter": adapter, "category": ADAPTERS[adapter]["category"], "command": {"argv": [bounded_text(item, 512) for item in argv], "currentDir": bounded_text(command_value.get("currentDir", ""), 512)}}
         if kind == "preview":
-            result.update({"requiresNetwork": bool(entry.get("requiresNetwork")), "requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "requiresServiceProbe": bool(entry.get("requiresServiceProbe")), "resultStatus": "not_executed"})
+            result.update({"requiresRoot": bool(entry.get("requiresRoot")), "requiresNetwork": bool(entry.get("requiresNetwork")), "requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "requiresServiceProbe": bool(entry.get("requiresServiceProbe")), "resultStatus": "not_executed"})
             return result
         if entry.get("resultStatus") not in ("complete", "failed", "incomplete") or not isinstance(entry.get("exitCode"), int):
             raise ValueError("scanner entry requires resultStatus and integer exitCode")
@@ -422,29 +426,58 @@ def normalize_entry(kind: str, entry: dict[str, Any], finding_count: int) -> dic
         for item in findings[:200]:
             if not isinstance(item, dict): continue
             normalized_findings.append({"adapter": adapter, "ruleId": bounded_text(item.get("ruleId", item.get("id", "")), 160), "severity": bounded_text(item.get("severity", "review"), 40), "title": bounded_text(item.get("title", "")), "location": bounded_text(item.get("location", item.get("path", "")), 512), "line": item.get("line") if isinstance(item.get("line"), int) else None, "library": bounded_text(item.get("library", item.get("package", "")), 160), "installedVersion": bounded_text(item.get("installedVersion", item.get("version", "")), 160), "fixedVersion": bounded_text(item.get("fixedVersion", ""), 160)})
-        result.update({"resultStatus": entry["resultStatus"], "exitCode": entry["exitCode"], "requiresNetwork": bool(entry.get("requiresNetwork")), "requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "requiresServiceProbe": bool(entry.get("requiresServiceProbe")), "findings": normalized_findings, "observations": [bounded_text(item) for item in observations[:200] if isinstance(item, str)]})
+        result.update({"resultStatus": entry["resultStatus"], "exitCode": entry["exitCode"], "requiresRoot": bool(entry.get("requiresRoot")), "requiresNetwork": bool(entry.get("requiresNetwork")), "requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "requiresServiceProbe": bool(entry.get("requiresServiceProbe")), "findings": normalized_findings, "observations": [bounded_text(item) for item in observations[:200] if isinstance(item, str)]})
         result["counts"] = {"findings": len(result["findings"]), "observations": len(result["observations"])}
         return result
     notes = entry.get("findingNotes")
-    if not isinstance(notes, list) or len(notes) != finding_count:
-        raise ValueError("triage entry requires exactly one findingNotes item for every recorded finding")
+    offset = entry.get("findingOffset", 0)
+    if not isinstance(notes, list) or not notes or not isinstance(offset, int) or offset < 0:
+        raise ValueError("triage entry requires a non-empty findingNotes list and non-negative findingOffset")
     normalized = []
     for expected, note in enumerate(notes):
-        if not isinstance(note, dict) or note.get("findingIndex") != expected or note.get("classification") not in ("true_positive", "false_positive", "needs_review"):
+        if not isinstance(note, dict) or not isinstance(note.get("findingIndex"), int) or note.get("findingIndex") != expected or note.get("classification") not in ("true_positive", "false_positive", "needs_review"):
             raise ValueError("triage notes must use ordered findingIndex and a known classification")
         confidence = note.get("confidence")
+        if isinstance(confidence, str):
+            confidence = {"high": 0.9, "medium": 0.6, "low": 0.3}.get(confidence.lower())
         if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1 or not isinstance(note.get("note"), str):
-            raise ValueError("triage notes require confidence from 0 through 1 and a text note")
-        normalized.append({"findingIndex": expected, "classification": note["classification"], "confidence": confidence, "note": bounded_text(note["note"], 2000)})
-    return {"findingNotes": normalized}
+            raise ValueError("triage notes require numeric confidence from 0 through 1 (or low/medium/high) and a text note")
+        global_index = offset + expected
+        if global_index >= finding_count:
+            raise ValueError("triage findingIndex is outside the recorded finding set")
+        normalized.append({"findingIndex": global_index, "classification": note["classification"], "confidence": confidence, "note": bounded_text(note["note"], 2000)})
+    return {"findingNotes": normalized, "findingOffset": offset}
 
 
 def command(ident: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     if ident not in ADAPTERS:
         raise ValueError(f"unknown adapter: {ident}")
     spec = ADAPTERS[ident]
-    exe = shutil.which(spec["exe"]) or spec["exe"]
-    return spec, [exe, *spec["argv"](args)]
+    exe = trusted_executable(spec["exe"]) if spec.get("requiresRoot") else (shutil.which(spec["exe"]) or spec["exe"])
+    if spec.get("requiresRoot") and not exe:
+        raise ValueError(f"root-required adapter executable is unavailable or not trusted: {spec['exe']}")
+    argv = [exe, *spec["argv"](args)]
+    if spec.get("requiresRoot"):
+        sudo = trusted_executable("sudo")
+        if not sudo:
+            raise ValueError("root-required adapter needs a trusted sudo binary")
+        argv = [sudo, "-n", *argv]
+    return spec, argv
+
+
+def trusted_executable(name: str) -> str | None:
+    """Resolve binaries used under sudo without trusting a user-controlled PATH."""
+    if not re.fullmatch(r"[A-Za-z0-9_.+-]+", name):
+        return None
+    for directory in TRUSTED_BIN_DIRS:
+        candidate = Path(directory) / name
+        try:
+            info = os.lstat(candidate)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022:
+            return str(candidate)
+    return None
 
 
 def normalize_output(adapter: str, output: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -608,19 +641,7 @@ def scanner_recovery(run: dict[str, Any]) -> str:
     return steps.get(adapter, "Rerun the identical previewed command after resolving the recorded diagnostic.") + (f" Diagnostic: {diagnostic}" if diagnostic else "")
 
 
-def run_one(root: Path, args: dict[str, Any], virtual: bool) -> dict[str, Any]:
-    ident = args.get("adapter")
-    if not isinstance(ident, str):
-        raise ValueError("adapter must be a string")
-    spec, argv = command(ident, args)
-    base = {"adapter": ident, "category": spec["category"], "host": read_os_release(), "requiresNetwork": spec.get("network", False), "requiresActiveNetwork": spec.get("active", False), "requiresTrafficCapture": spec.get("traffic", False), "requiresServiceProbe": spec.get("serviceProbe", False), "command": {"argv": argv, "currentDir": str(root)}}
-    if virtual:
-        return {**base, "execution": "virtual", "processStarted": False, "resultStatus": "not_executed", "findings": []}
-    if shutil.which(spec["exe"]) is None:
-        raise ValueError(f"scanner executable not found on PATH: {spec['exe']}")
-    completed = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=spec["timeout"], check=False)
-    output = (completed.stdout or "")[:MAX_OUTPUT]
-    error = (completed.stderr or "")[:MAX_OUTPUT]
+def completed_result(base: dict[str, Any], spec: dict[str, Any], ident: str, return_code: int, output: str, error: str) -> dict[str, Any]:
     if ident == "docker-inspect":
         findings, observations = normalize_docker_inspect(output)
     elif ident == "docker-security-options":
@@ -631,9 +652,104 @@ def run_one(root: Path, args: dict[str, Any], virtual: bool) -> dict[str, Any]:
         findings, observations = normalize_service_probe(ident, output)
     else:
         findings, observations = normalize_output(ident, output)
-    status = "complete" if completed.returncode == 0 or completed.returncode == 1 and findings else "incomplete" if completed.returncode == 1 else "failed"
-    snippets = {"stdoutSnippet": output[:4000], "stderrSnippet": error[:4000]} if not spec.get("sensitiveOutput") else {"stdoutSnippet": "[WITHHELD: normalized security fields only]", "stderrSnippet": "[WITHHELD: normalized security fields only]"}
-    return redact({**base, "execution": "executed", "processStarted": True, "resultStatus": status, "exitCode": completed.returncode, "findings": findings, "observations": observations, "counts": {"findings": len(findings), "observations": len(observations)}, **snippets})
+    status = "complete" if return_code == 0 or return_code == 1 and findings else "incomplete" if return_code == 1 else "failed"
+    snippets = {"stdoutSnippet": output[:4000], "stderrSnippet": error[:4000]} if not spec.get("sensitiveOutput") else ({"stdoutSnippet": bounded_text(output, 4000), "stderrSnippet": bounded_text(error, 4000)} if spec.get("trustedAi") else {"stdoutSnippet": "[WITHHELD: normalized security fields only]", "stderrSnippet": "[WITHHELD: normalized security fields only]"})
+    return redact({**base, "execution": "executed", "processStarted": True, "resultStatus": status, "exitCode": return_code, "findings": findings, "observations": observations, "counts": {"findings": len(findings), "observations": len(observations)}, **snippets})
+
+
+def run_one(root: Path, args: dict[str, Any], virtual: bool) -> dict[str, Any]:
+    ident = args.get("adapter")
+    if not isinstance(ident, str):
+        raise ValueError("adapter must be a string")
+    spec, argv = command(ident, args)
+    result_spec = {**spec, "trustedAi": bool(args.get("_trustedAi"))}
+    base = {"adapter": ident, "category": spec["category"], "host": read_os_release(), "requiresRoot": spec.get("requiresRoot", False), "requiresNetwork": spec.get("network", False), "requiresActiveNetwork": spec.get("active", False), "requiresTrafficCapture": spec.get("traffic", False), "requiresServiceProbe": spec.get("serviceProbe", False), "command": {"argv": argv, "currentDir": str(root)}}
+    if virtual:
+        return {**base, "execution": "virtual", "processStarted": False, "resultStatus": "not_executed", "findings": []}
+    if (trusted_executable(spec["exe"]) if spec.get("requiresRoot") else shutil.which(spec["exe"])) is None:
+        raise ValueError(f"scanner executable unavailable or not trusted: {spec['exe']}")
+    if spec.get("requiresRoot") and trusted_executable("sudo") is None:
+        raise ValueError("root-required adapter needs a trusted sudo binary")
+    completed = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=spec["timeout"], check=False)
+    output = (completed.stdout or "")[:MAX_OUTPUT]
+    error = (completed.stderr or "")[:MAX_OUTPUT]
+    return completed_result(base, result_spec, ident, completed.returncode, output, error)
+
+
+def start_job(root: Path, args: dict[str, Any]) -> dict[str, Any]:
+    ident = args.get("adapter")
+    if not isinstance(ident, str): raise ValueError("adapter must be a string")
+    spec, argv = command(ident, args)
+    if not spec.get("background"): return run_one(root, args, False)
+    if (trusted_executable(spec["exe"]) if spec.get("requiresRoot") else shutil.which(spec["exe"])) is None: raise ValueError(f"scanner executable unavailable or not trusted: {spec['exe']}")
+    job_id = str(time.time_ns())
+    job_dir = run_directory(root, job_id, create=True)
+    stdout_path, stderr_path, result_path, launch_path = job_dir / "stdout.log", job_dir / "stderr.log", job_dir / "result.json", job_dir / "launch"
+    base = {"adapter": ident, "category": spec["category"], "host": read_os_release(), "requiresRoot": spec.get("requiresRoot", False), "requiresNetwork": spec.get("network", False), "requiresActiveNetwork": spec.get("active", False), "requiresTrafficCapture": spec.get("traffic", False), "requiresServiceProbe": spec.get("serviceProbe", False), "command": {"argv": argv, "currentDir": str(root)}}
+    stored_spec = {"category": spec["category"], "sensitiveOutput": spec.get("sensitiveOutput", False), "trustedAi": bool(args.get("_trustedAi")), "serviceProbe": spec.get("serviceProbe", False)}
+    state_path_value = job_dir / "job-state.json"
+    state = {"root": str(root), "runId": args.get("runId"), "pid": None, "status": "starting", "base": base, "spec": stored_spec, "adapter": ident, "stdoutPath": str(stdout_path), "stderrPath": str(stderr_path), "resultPath": str(result_path), "startedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "startedAtEpoch": time.time()}
+    atomic_write(state_path_value, json.dumps(state, ensure_ascii=False, indent=2) + "\n", replace=False)
+    worker = "import json,os,signal,subprocess,sys,pathlib,time; d=json.loads(sys.argv[1]); state=pathlib.Path(d['state']); saved=json.loads(state.read_text(encoding='utf-8')); saved.update({'pid':os.getpid(),'status':'running'}); tmp=state.with_suffix('.tmp'); tmp.write_text(json.dumps(saved),encoding='utf-8'); os.replace(tmp,state); launch=pathlib.Path(d['launch']); deadline=time.time()+30\nwhile not launch.exists() and time.time() < deadline: time.sleep(0.05)\nif not launch.exists(): pathlib.Path(d['stderr']).write_text('job launch was not committed\\n',encoding='utf-8'); pathlib.Path(d['result']).write_text(json.dumps({'exitCode':125,'timedOut':False}),encoding='utf-8'); raise SystemExit(125)\nout=open(d['stdout'],'wb'); err=open(d['stderr'],'wb'); code=125; timed=False; p=None\ntry:\n p=subprocess.Popen(d['argv'],cwd=d['cwd'],stdout=out,stderr=err,start_new_session=True); code=p.wait(timeout=d['timeout'])\nexcept subprocess.TimeoutExpired:\n timed=True; err.write(b'job timeout\\n'); os.killpg(p.pid,signal.SIGTERM)\n try:\n  code=p.wait(timeout=5)\n except subprocess.TimeoutExpired:\n  os.killpg(p.pid,signal.SIGKILL); code=p.wait(timeout=5)\nfinally:\n out.close(); err.close(); result=pathlib.Path(d['result']); temp=result.with_suffix('.tmp'); temp.write_text(json.dumps({'exitCode':code,'timedOut':timed}),encoding='utf-8'); os.replace(temp,result)"
+    worker_input = json.dumps({"argv": argv, "cwd": str(root), "stdout": str(stdout_path), "stderr": str(stderr_path), "result": str(result_path), "state": str(state_path_value), "launch": str(launch_path), "timeout": spec["timeout"]})
+    process = None
+    try:
+        process = subprocess.Popen([sys.executable, "-c", worker, worker_input], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        state["pid"] = process.pid
+        state["status"] = "running"
+        atomic_write(state_path_value, json.dumps(state, ensure_ascii=False, indent=2) + "\n", replace=True)
+        atomic_write(launch_path, "launch\n", replace=False)
+    except Exception:
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError):
+                pass
+            try:
+                process.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                try: os.killpg(process.pid, signal.SIGKILL)
+                except OSError: pass
+        raise
+    JOBS[job_id] = {**state, "process": process}
+    return {**base, "execution": "started", "processStarted": True, "resultStatus": "running", "jobId": job_id, "pollAfterSeconds": 5}
+
+
+def poll_job(root: Path, job_id: Any) -> dict[str, Any]:
+    if not isinstance(job_id, str): raise ValueError("jobId must be a string")
+    job_dir = run_directory(root, job_id, create=False)
+    state_path = job_dir / "job-state.json"
+    if not state_path.is_file(): raise ValueError("unknown or expired jobId")
+    job = json.loads(read_regular_file(state_path, MAX_OUTPUT))
+    if job.get("root") != str(root): raise ValueError("jobId belongs to a different report directory")
+    result_path = Path(job["resultPath"])
+    if not result_path.is_file():
+        if not isinstance(job.get("pid"), int):
+            if time.time() - float(job.get("startedAtEpoch", time.time())) > 60:
+                return {"jobId": job_id, "execution": "finished_without_result", "resultStatus": "failed", "processStarted": False, "stderrSnippet": "job remained in starting state; no scanner was launched"}
+            return {"jobId": job_id, "execution": "starting", "resultStatus": "running", "processStarted": False, "pollAfterSeconds": 5}
+        try:
+            os.kill(int(job["pid"]), 0)
+        except ProcessLookupError:
+            return {"jobId": job_id, "execution": "finished_without_result", "resultStatus": "failed", "processStarted": True, "stderrSnippet": "job exited before writing a result; inspect job logs"}
+        except PermissionError:
+            pass
+        return {"jobId": job_id, "execution": "running", "resultStatus": "running", "processStarted": True, "pollAfterSeconds": 5}
+    result_meta = json.loads(read_regular_file(result_path, MAX_OUTPUT))
+    output = read_regular_file(Path(job["stdoutPath"]), MAX_OUTPUT)
+    error = read_regular_file(Path(job["stderrPath"]), MAX_OUTPUT)
+    result = completed_result(job["base"], job["spec"], job["adapter"], int(result_meta.get("exitCode", 125)), output, error)
+    result["jobId"] = job_id
+    local_job = JOBS.get(job_id)
+    if local_job:
+        try:
+            local_job["process"].wait(timeout=1)
+            JOBS.pop(job_id, None)
+        except subprocess.TimeoutExpired:
+            pass
+        except AttributeError:
+            JOBS.pop(job_id, None)
+    return result
 
 
 def state_path(root: Path, run_id: Any) -> Path:
@@ -656,6 +772,86 @@ def started_run(root: Path, run_id: Any) -> dict[str, Any]:
         raise ValueError("runId belongs to a different report directory")
     RUNS[str(run_id)] = run
     return run
+
+
+def acquire_lifecycle_lock(root: Path) -> Path:
+    scanner_root = root / ".mnogovid" / "system-scanner"
+    ensure_private_directory(root / ".mnogovid")
+    ensure_private_directory(scanner_root)
+    lock = scanner_root / ".lifecycle.lock"
+    try:
+        descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+        return lock
+    except FileExistsError as exc:
+        try:
+            info = os.lstat(lock)
+            owner = int(read_regular_file(lock, 64).strip()) if stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o022 else -1
+            os.kill(owner, 0)
+        except ProcessLookupError:
+            lock.unlink(missing_ok=True)
+            return acquire_lifecycle_lock(root)
+        except (OSError, ValueError):
+            pass
+        raise ValueError("another lifecycle start is already in progress for this report directory") from exc
+
+
+def existing_lifecycle(root: Path, mode: str, consent: dict[str, bool]) -> tuple[str, dict[str, Any]] | None:
+    """Resume a still-open lifecycle after a client/MCP timeout instead of starting another scan."""
+    scanner_root = root / ".mnogovid" / "system-scanner"
+    if not scanner_root.is_dir() or scanner_root.is_symlink():
+        return None
+    for child in sorted(scanner_root.iterdir(), key=lambda item: item.name):
+        if not child.name.isdigit() or child.is_symlink() or not child.is_dir():
+            continue
+        state = child / "run-state.json"
+        if not state.is_file() or state.is_symlink():
+            continue
+        try:
+            run = json.loads(read_regular_file(state, MAX_OUTPUT))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if run.get("reportDirectory") != str(root):
+            continue
+        if run.get("mode") == mode:
+            previous_consent = normalize_consent(run.get("consent", {}))
+            if all(not was_granted or consent.get(key, False) for key, was_granted in previous_consent.items()):
+                if previous_consent != consent:
+                    run["consent"] = consent
+                    save_run(root, child.name, run)
+                RUNS[child.name] = run
+                return child.name, run
+        raise ValueError("an unfinished lifecycle already exists for this report directory; resume it or use a new report directory")
+    return None
+
+
+def duplicate_record(records: list[dict[str, Any]], kind: str, normalized: dict[str, Any]) -> bool:
+    if kind == "preview":
+        return any(item.get("adapter") == normalized.get("adapter") and item.get("command", {}).get("argv") == normalized.get("command", {}).get("argv") for item in records)
+    if kind == "skipped":
+        return any(item.get("adapter") == normalized.get("adapter") and item.get("reason") == normalized.get("reason") for item in records)
+    return any(item == normalized for item in records)
+
+
+def existing_job(root: Path, run_id: str, adapter: str, argv: list[str]) -> str | None:
+    scanner_root = root / ".mnogovid" / "system-scanner"
+    if not scanner_root.is_dir() or scanner_root.is_symlink():
+        return None
+    for child in scanner_root.iterdir():
+        if not child.name.isdigit() or child.is_symlink() or not child.is_dir():
+            continue
+        state_path_value = child / "job-state.json"
+        if not state_path_value.is_file() or state_path_value.is_symlink():
+            continue
+        try:
+            state = json.loads(read_regular_file(state_path_value, MAX_OUTPUT))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        base = state.get("base", {})
+        if state.get("root") == str(root) and state.get("runId") == run_id and state.get("adapter") == adapter and base.get("command", {}).get("argv") == argv:
+            return child.name
+    return None
 
 
 def render_report(root: Path, run: dict[str, Any], report_id: str) -> str:
@@ -727,8 +923,14 @@ def write_report(root: Path, run: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_ssh_alias(value: Any) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value):
-        raise ValueError("sshAlias must be a configured SSH alias containing only letters, digits, dot, underscore, or hyphen")
+    if not isinstance(value, str) or not value or len(value) > 255:
+        raise ValueError("sshAlias must be a configured alias or an explicit SSH target")
+    # An explicit user@host target is self-contained and must not require
+    # reading ~/.ssh/config. Strict host-key checking remains enabled below.
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}", value):
+        return value
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value):
+        raise ValueError("sshAlias must be a configured alias or an explicit user@host SSH target")
     config = Path.home() / ".ssh" / "config"
     try:
         info = os.lstat(config)
@@ -803,8 +1005,36 @@ def consume_remote_deployment(alias: str, deployment_id: Any) -> dict[str, Any]:
     return {**status, "deployment": "updated"}
 
 
-def remote_call(alias: str, operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if operation not in {"system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"}:
+def mirror_remote_report(response: dict[str, Any], local_report_directory: Any) -> dict[str, Any]:
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        return response.get("result", {}) if isinstance(response, dict) else {}
+    blocks = result.get("content")
+    if result.get("isError") is True or not isinstance(blocks, list) or not blocks:
+        return result
+    text = blocks[0].get("text") if isinstance(blocks[0], dict) else None
+    if not isinstance(text, str):
+        return result
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return result
+    report_text = payload.pop("reportText", None)
+    report_id = payload.get("reportId")
+    if not isinstance(report_text, str) or not isinstance(report_id, str) or not report_id.isdigit():
+        return result
+    local_root = report_directory(local_report_directory if isinstance(local_report_directory, str) else os.getcwd())
+    destination = run_directory(local_root, report_id, create=True) / "result.md"
+    atomic_write(destination, report_text[:MAX_OUTPUT], replace=False)
+    payload["remotePath"] = payload.get("path")
+    payload["path"] = str(destination)
+    payload["storedLocally"] = True
+    result["content"] = [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]
+    return result
+
+
+def remote_call(alias: str, operation: str, arguments: dict[str, Any], local_report_directory: Any = None) -> dict[str, Any]:
+    if operation not in {"system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_poll_job", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"}:
         raise ValueError("remote operation is not allowlisted")
     if not isinstance(arguments, dict):
         raise ValueError("remote operation arguments must be an object")
@@ -812,7 +1042,10 @@ def remote_call(alias: str, operation: str, arguments: dict[str, Any]) -> dict[s
     if not status.get("runnerExists") or status.get("version") != REMOTE_RUNNER_RELEASE:
         raise ValueError("remote runner is missing or outdated; obtain a one-time deployment ticket and call system_remote_deploy_runner after explicit deployment consent")
     launcher = "import os,runpy; runpy.run_path(os.path.expanduser('" + REMOTE_RUNNER_SCRIPT + "'),run_name='__main__')"
-    request = json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":operation,"arguments":arguments}}) + "\n"
+    request_arguments = dict(arguments)
+    if operation == "system_finalize_run":
+        request_arguments["includeReportText"] = True
+    request = json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":operation,"arguments":request_arguments}}) + "\n"
     result = ssh_run(alias, [status["pythonPath"], "-c", launcher], input_text=request, timeout=REMOTE_TIMEOUT)
     if result.returncode != 0:
         raise ValueError("remote MCP call failed: " + bounded_text(result.stderr or result.stdout, 500))
@@ -822,6 +1055,8 @@ def remote_call(alias: str, operation: str, arguments: dict[str, Any]) -> dict[s
         raise ValueError("remote MCP returned invalid JSON-RPC") from exc
     if "error" in response:
         raise ValueError("remote MCP protocol error: " + bounded_text(response["error"].get("message", "unknown"), 500))
+    if operation == "system_finalize_run":
+        return mirror_remote_report(response, local_report_directory)
     return response.get("result", {})
 
 
@@ -832,8 +1067,10 @@ def content(value: Any, error: bool = False) -> dict[str, Any]:
 def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "system_catalog":
-            return content({"adapters": [{"id": key, "category": value["category"], "executable": value["exe"], "requiresNetwork": value.get("network", False), "requiresActiveNetwork": value.get("active", False), "requiresTrafficCapture": value.get("traffic", False), "requiresServiceProbe": value.get("serviceProbe", False)} for key, value in ADAPTERS.items()], "safety": "No remediation, installations, arbitrary commands, PCAP files, or unapproved network/service probes. Sensitive service and Docker output is normalized before it is returned."})
+            return content({"adapters": [{"id": key, "category": value["category"], "executable": value["exe"], "requiresRoot": value.get("requiresRoot", False), "requiresNetwork": value.get("network", False), "requiresActiveNetwork": value.get("active", False), "requiresTrafficCapture": value.get("traffic", False), "requiresServiceProbe": value.get("serviceProbe", False)} for key, value in ADAPTERS.items()], "safety": "No remediation, installations, arbitrary commands, PCAP files, or unapproved root/network/service probes. Sensitive service and Docker output is normalized before it is returned."})
         if name == "system_remote_prepare":
+            if args.get("approveConnection") is not True:
+                raise ValueError("remote connection approval is required before SSH/config inspection")
             alias = validate_ssh_alias(args.get("sshAlias"))
             return content({**remote_probe(alias), "expectedVersion": REMOTE_RUNNER_RELEASE, "deployment": "not_requested"})
         if name == "system_remote_authorize_deploy":
@@ -844,7 +1081,7 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             return content(consume_remote_deployment(alias, args.get("deploymentId")))
         if name == "system_remote_call":
             alias = validate_ssh_alias(args.get("sshAlias"))
-            return remote_call(alias, args.get("operation"), args.get("arguments"))
+            return remote_call(alias, args.get("operation"), args.get("arguments"), args.get("localReportDirectory"))
         if name in ("system_doctor", "system_plan"):
             root = report_directory(args.get("reportDirectory")); data = plan(root)
             if name == "system_doctor":
@@ -859,17 +1096,42 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name == "system_run":
             root = report_directory(args.get("reportDirectory")); run = started_run(root, args.get("runId"))
             preview = run_one(root, args, True)
-            if preview["requiresNetwork"] and not run["consent"]["network"]:
+            if preview["requiresNetwork"] and not run["consent"].get("network", False):
                 raise ValueError("network consent was not recorded for this lifecycle")
-            if preview["requiresActiveNetwork"] and not run["consent"]["activeNetwork"]:
+            if preview["requiresRoot"] and not run["consent"].get("rootPrivileges", False):
+                raise ValueError("root-privilege consent was not recorded for this lifecycle")
+            if preview["requiresActiveNetwork"] and not run["consent"].get("activeNetwork", False):
                 raise ValueError("active network consent was not recorded for this lifecycle")
-            if preview["requiresTrafficCapture"] and not run["consent"]["trafficCapture"]:
+            if preview["requiresTrafficCapture"] and not run["consent"].get("trafficCapture", False):
                 raise ValueError("traffic-capture consent was not recorded for this lifecycle")
-            if preview["requiresServiceProbe"] and not run["consent"]["serviceProbe"]:
+            if preview["requiresServiceProbe"] and not run["consent"].get("serviceProbe", False):
                 raise ValueError("local service-probe consent was not recorded for this lifecycle")
             if not any(item.get("adapter") == preview["adapter"] and item.get("command", {}).get("argv") == preview["command"]["argv"] for item in run["virtualCommands"]):
                 raise ValueError("record an identical system_virtual_run preview in this lifecycle before executing")
-            return content(run_one(root, args, False))
+            fingerprint = json.dumps(preview["command"]["argv"], ensure_ascii=False, separators=(",", ":"))
+            executions = run.setdefault("executions", {})
+            previous = executions.get(fingerprint)
+            if isinstance(previous, dict):
+                if isinstance(previous.get("jobId"), str):
+                    return content(poll_job(root, previous["jobId"]))
+                if isinstance(previous.get("result"), dict):
+                    return content(previous["result"])
+            orphan = existing_job(root, str(args.get("runId")), preview["adapter"], preview["command"]["argv"])
+            if orphan:
+                executions[fingerprint] = {"jobId": orphan}
+                save_run(root, str(args.get("runId")), run)
+                return content(poll_job(root, orphan))
+            execution_args = {**args, "_trustedAi": bool(run["consent"].get("trustedAi", False))}
+            result = start_job(root, execution_args)
+            if result.get("resultStatus") == "running" and isinstance(result.get("jobId"), str):
+                executions[fingerprint] = {"jobId": result["jobId"]}
+            else:
+                executions[fingerprint] = {"result": result}
+            save_run(root, str(args.get("runId")), run)
+            return content(result)
+        if name == "system_poll_job":
+            root = report_directory(args.get("reportDirectory"))
+            return content(poll_job(root, args.get("jobId")))
         if name == "system_ingest":
             root = report_directory(args.get("reportDirectory"))
             report = private_input_report(root, args.get("report"))
@@ -884,10 +1146,18 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if mode not in ("scan", "scan-ai", "scan-agent"):
                 raise ValueError("mode and consent are required")
             consent = normalize_consent(consent)
-            run_id = str(time.time_ns())
-            run = {"reportDirectory": str(root), "mode": mode, "consent": consent, "startedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "scannerResults": [], "virtualCommands": [], "skippedScanners": [], "hostAiTriage": None, "agentReview": None}
-            RUNS[run_id] = run; save_run(root, run_id, run)
-            return content({"runId": run_id, "statePath": str(state_path(root, run_id)), "processStarted": False, "reportWritten": False})
+            lock = acquire_lifecycle_lock(root)
+            try:
+                existing = existing_lifecycle(root, mode, consent)
+                if existing:
+                    run_id, _ = existing
+                    return content({"runId": run_id, "statePath": str(state_path(root, run_id)), "processStarted": False, "reportWritten": False, "resumed": True})
+                run_id = str(time.time_ns())
+                run = {"reportDirectory": str(root), "mode": mode, "consent": consent, "startedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "scannerResults": [], "virtualCommands": [], "skippedScanners": [], "executions": {}, "hostAiTriage": None, "agentReview": None}
+                RUNS[run_id] = run; save_run(root, run_id, run)
+                return content({"runId": run_id, "statePath": str(state_path(root, run_id)), "processStarted": False, "reportWritten": False})
+            finally:
+                lock.unlink(missing_ok=True)
         if name == "system_record_run":
             root = report_directory(args.get("reportDirectory")); run_id = args.get("runId"); run = started_run(root, run_id)
             kind, entry = args.get("kind"), args.get("entry")
@@ -895,10 +1165,16 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("kind and entry are required")
             finding_count = sum(len(item.get("findings", [])) for item in run["scannerResults"])
             normalized = normalize_entry(kind, entry, finding_count)
-            if kind == "host_ai_triage": run["hostAiTriage"] = normalized
+            if kind == "host_ai_triage":
+                previous = run.get("hostAiTriage") or {"findingNotes": []}
+                by_index = {item["findingIndex"]: item for item in previous.get("findingNotes", []) if isinstance(item, dict) and isinstance(item.get("findingIndex"), int)}
+                for item in normalized["findingNotes"]: by_index[item["findingIndex"]] = item
+                run["hostAiTriage"] = {"findingNotes": [by_index[index] for index in sorted(by_index)]}
             elif kind == "agent_review": run["agentReview"] = normalized
             else:
                 key = {"scanner": "scannerResults", "preview": "virtualCommands", "skipped": "skippedScanners"}[kind]
+                if duplicate_record(run[key], kind, normalized):
+                    return content({"runId": run_id, "recorded": kind, "duplicate": True})
                 run[key].append(normalized)
             save_run(root, str(run_id), run)
             return content({"runId": run_id, "recorded": kind})
@@ -911,16 +1187,27 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if args.get("agentReview") is not None:
                 if not isinstance(args["agentReview"], dict): raise ValueError("agentReview must be an object")
                 run["agentReview"] = normalize_entry("agent_review", args["agentReview"], finding_count)
-            if run["mode"] in ("scan-ai", "scan-agent") and run["consent"].get("aiTriage") is True and not run.get("hostAiTriage"):
-                raise ValueError("record approved host AI triage before finalizing")
+            if run["mode"] in ("scan-ai", "scan-agent") and run["consent"].get("aiTriage") is True:
+                notes = (run.get("hostAiTriage") or {}).get("findingNotes", [])
+                expected = set(range(finding_count))
+                actual = {item.get("findingIndex") for item in notes if isinstance(item, dict)}
+                if actual != expected:
+                    raise ValueError(f"record host AI triage for every finding before finalizing (missing {len(expected - actual)})")
             if run["mode"] == "scan-agent" and run["consent"].get("agentReview") is True and not run.get("agentReview"):
                 raise ValueError("record approved agent review before finalizing")
-            result = write_report(root, run); state_path(root, run_id).unlink(missing_ok=True); RUNS.pop(str(run_id), None)
+            result = write_report(root, run)
+            if args.get("includeReportText") is True:
+                result["reportText"] = (Path(result["path"]).read_text(encoding="utf-8"))[:MAX_OUTPUT]
+            state_path(root, run_id).unlink(missing_ok=True); RUNS.pop(str(run_id), None)
             return content({**result, "runId": run_id, "finalized": True})
         if name == "system_ai_triage_payload":
             findings = redact(args.get("findings"))
             if not isinstance(findings, list): raise ValueError("findings must be an array")
-            return content({"findingLimit": min(len(findings), 40), "findings": findings[:40], "instruction": "Analyze only supplied redacted evidence. Return findingNotes in zero-based findingIndex order with classification (true_positive, false_positive, needs_review), confidence, and detailed evidence note. Do not request secrets or suggest automatic remediation."})
+            offset = args.get("findingOffset", 0)
+            if not isinstance(offset, int) or offset < 0 or offset > len(findings):
+                raise ValueError("findingOffset must be a non-negative integer within the supplied finding set")
+            trusted = args.get("trustedAi") is True
+            return content({"findingLimit": min(len(findings), 40), "findingOffset": offset, "privacyMode": "trusted-ai" if trusted else "strict-redacted", "findings": findings[offset:offset + 40], "instruction": "Analyze only supplied evidence. Return findingNotes in zero-based order for this batch and include findingOffset when recording the batch. Use classification (true_positive, false_positive, needs_review), numeric confidence 0..1 (or low/medium/high), and a detailed evidence note. Do not request secrets or suggest automatic remediation. The trusted-ai mode may include expanded non-secret diagnostics, but secrets remain scrubbed."})
         if name == "system_advisory_lookup":
             if args.get("allowNetwork") is not True:
                 raise ValueError("OSV advisory lookup requires allowNetwork=true")

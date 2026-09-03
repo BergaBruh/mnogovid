@@ -1,6 +1,6 @@
 ---
 name: security-scan-ai
-description: Run approved local security scanners, then use host AI to analyze bounded, redacted findings.
+description: Run approved local security scanners, then use host AI to analyze bounded findings under strict-redacted or trusted-ai consent.
 ---
 
 # Security scan with AI analysis
@@ -18,6 +18,8 @@ workflow. The scanners themselves never invoke an AI model.
 3. After local results are collected, ask separately: “May I send the bounded,
    redacted findings to the host AI for analysis?” Do not construct an AI
    payload or use model analysis before an unambiguous yes.
+   Ask separately whether that AI is trusted to receive expanded non-secret
+   diagnostics (`trustedAi`); keep it false unless explicitly approved.
 4. After approval, call `security_ai_triage_payload`, then have the host model
    analyze its returned payload. Treat the model assessment as advisory:
    preserve scanner evidence and classify each finding as true positive, false
@@ -33,7 +35,9 @@ workflow. The scanners themselves never invoke an AI model.
 ## Boundaries
 
 - Model analysis is never a substitute for scanner evidence or an advisory.
-- Share only the bounded, redacted payload prepared by the MCP server.
+- Share only the bounded payload prepared by the MCP server. In `trustedAi`
+  mode it may contain expanded non-secret diagnostics; secrets, tokens, private
+  keys, and authentication headers remain scrubbed.
 - An approved AI scan cannot be finalized while its host-AI triage is still
   unrecorded.
 - An approved AI scan with findings cannot be recorded or finalized unless each

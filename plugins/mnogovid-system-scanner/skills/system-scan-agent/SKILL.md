@@ -10,6 +10,8 @@ the unified workflow. Follow bootstrap, toolchain validation, local/remote
 target selection, and host-AI triage first. Once triage is recorded, ask a
 separate question: “May I share the bounded, redacted results and AI triage
 with the independent system-triage agent?” Do not delegate before a clear yes.
+The host-AI step may use `trustedAi` only after its own separate approval;
+that expands non-secret diagnostics but never permits credentials or keys.
 
 The reviewer is not another scanner: it validates only the supplied evidence,
 distinguishes confirmed facts from hypotheses, and does not modify the host.

@@ -28,7 +28,10 @@ Present exactly these modes:
 Map the selected mode to `security_start_run`: `scan`, `scan-ai`, or
 `scan-agent`. Then ask separately about network-dependent scanners and every
 individual `security_run`; no answer other than an unambiguous yes permits the
-corresponding action.
+corresponding action. For AI modes, ask whether the selected AI is trusted to
+receive expanded non-secret diagnostics (`trustedAi`). Pass it only after an
+explicit yes; secrets, tokens, private keys, and authentication headers remain
+scrubbed in either mode.
 
 Call `security_plan`, start exactly one lifecycle, preview every adapter, and
 run only the approved allowlisted scanner with that lifecycle `runId`. The MCP
