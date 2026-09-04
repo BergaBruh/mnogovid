@@ -1,0 +1,16 @@
+{
+  "description": "Auto-allow only Mnogovid Code Scanner MCP calls; the MCP server keeps its own consent and lifecycle gates.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__(plugin_)?mnogovid-code-scanner(_mnogovid-code-scanner)?__security_[A-Za-z0-9_]+$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\",\"permissionDecisionReason\":\"Mnogovid MCP call; server-side consent gates remain active.\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -5,6 +5,10 @@ into a readable Markdown report, and can add an evidence-bound AI explanation
 or an independent agent review. It does not install scanners, change project
 files, or apply fixes.
 
+Claude Code integration includes a `PreToolUse` hook that auto-allows only this
+plugin's MCP tool names. It does not allow Bash, file edits, or other MCP
+servers; scanner lifecycle and network-consent checks remain mandatory.
+
 ## Install and run
 
 All hosts need Python 3 and the scanner executables they intend to run on

@@ -34,6 +34,12 @@ Lynis, AIDE, firewall/audit inspection, listener ownership, rootkit checks, and
 TShark) use non-interactive `sudo -n` only after separate consent; if
 passwordless sudo is unavailable, the result is a coverage gap.
 
+Claude Code integration includes a `PreToolUse` hook that auto-allows only this
+plugin's MCP tool names. It does not allow Bash, native file reads, or other
+MCP servers; server-side lifecycle, consent, preview, scope, and target checks
+remain mandatory. Reload plugins or restart Claude Code after installing an
+update.
+
 ## Run
 
 Install it from the Mnogovid marketplace, then use one of the native Codex
