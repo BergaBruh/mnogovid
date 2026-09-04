@@ -21,6 +21,9 @@ The user must separately approve each of the following:
    and bounded TShark observation as applicable.
 4. Every individual `system_run` after seeing its exact virtual command.
 
+Group selection is a separate scope decision and is not implied by command
+consent.
+
 No approval implies another. Local scanners can consume CPU, disk I/O, or need
 privilege, so each still needs an explicit per-command approval.
 
@@ -30,11 +33,17 @@ privilege, so each still needs an explicit per-command approval.
 2. Call `system_bootstrap` with `createProfile=false`. Ask before creating a
    missing profile; stop on an invalid profile. Use its doctor result, then call
    `system_plan`.
-3. Start `system_start_run` in mode `scan`, recording every approval or denial.
-4. Preview every candidate with `system_virtual_run`; record it as `preview`.
+3. Present `system_plan.groups` and ask which groups to scan: host baseline,
+   malware/rootkits, integrity/CVEs, containers, services/databases, network
+   exposure, and traffic. Mark groups with no detected runtime/service as
+   optional and do not select them by default. Start `system_start_run` in mode
+   `scan` with the selected `scopeGroups`, recording every approval or denial.
+4. Preview only adapters belonging to selected groups with
+   `system_virtual_run`; record each as `preview`.
 5. Run only individually approved commands through `system_run`. If it returns
-   a `jobId`, poll with `system_poll_job` until completion; record only the
-   completed redacted result as `scanner`. Record unavailable or declined
+   a `jobId`, call `system_record_job` to poll and record the normalized result
+   directly; use `system_poll_job` only for status checks. Never transcribe raw
+   scanner JSON into `system_record_run`. Record unavailable or declined
    adapters as `skipped`.
 6. For `nmap-local`, record lifecycle active-network consent,
    require `authorizedTarget=true`, and use exactly one literal IP the user is

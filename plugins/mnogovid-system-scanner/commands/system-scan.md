@@ -39,14 +39,28 @@ Before scanner-mode selection, complete bootstrap for the selected target.
    Pass the current local working directory as `localReportDirectory` on every
    remote call; it is used only for the final local report mirror.
    Do not continue to scanning while required selected adapters are missing.
-3. **Mode:** Only after successful bootstrap, ask: “How should I analyze the evidence?” Present exactly these modes:
+3. **Scope:** Before mode selection, show the `groups` from `system_plan` and
+   ask which groups to scan. Offer only groups with relevant adapters, marking
+   unavailable/undetected groups explicitly:
+   - **Host baseline** — hardening, persistence, audit, logs and kernel.
+   - **Malware/rootkits** — ClamAV, rkhunter and chkrootkit.
+   - **Integrity/CVEs** — AIDE, package integrity and vulnerability data.
+   - **Containers** — Docker/Podman and image posture (only when a runtime is detected).
+   - **Services/databases** — Nginx, MySQL, PostgreSQL, Redis, MongoDB and ClickHouse (only when service hints exist, unless the user explicitly opts in).
+   - **Network exposure** — listeners, firewall and explicitly authorized Nmap target.
+   - **Traffic** — bounded TShark metadata capture, only when explicitly requested.
+   Record the selected IDs as `scopeGroups` in `system_start_run`; never run an
+   adapter outside those groups. A missing database/runtime is a skip, not a
+   reason to probe every client by default.
+4. **Mode:** Only after successful bootstrap and scope selection, ask: “How should I analyze the evidence?” Present exactly these modes:
    - **Adapters only** — reproducible local scanner evidence.
    - **Adapters + AI triage** — scanner evidence plus bounded, redacted host-AI
      classification.
    - **Adapters + AI triage + independent review** — adds a separately approved
      `system-triage` assessment after host-AI triage.
 
-Map the mode to `system_start_run`: `scan`, `scan-ai`, or `scan-agent`.
+Map the mode to `system_start_run`: `scan`, `scan-ai`, or `scan-agent`, and pass
+the selected `scopeGroups`.
 Use only the chosen target's tools; never mix local and remote tool results in
 one lifecycle.
 
@@ -59,12 +73,21 @@ Treat anything but an unambiguous yes as denial.
 
 Use bootstrap's doctor result and then call `system_plan`; start exactly one
 lifecycle; preview every adapter; and execute only an identical, recorded
-preview with that lifecycle `runId`. When `system_run` returns a `jobId`, poll
-with `system_poll_job` until completion, then record the completed result.
+preview with that lifecycle `runId`. When `system_run` returns a `jobId`, use
+`system_record_job` to poll and record the normalized result directly; use
+`system_poll_job` only for status checks. Never construct scanner-result JSON
+from raw logs yourself.
 Record all results and skips. Never install tools, request a sudo password,
 apply remediation, save a PCAP, expose a remote MCP port, copy credentials, or
 enable SSH agent forwarding. Root-required adapters may use `sudo -n` only
 after recorded root-privilege consent; a password prompt is an actionable gap.
+
+Do not run Bash, `ssh`, `which`, `command -v`, `ssh-keygen`, or any native file
+read to verify adapters or credentials; `system_doctor`/`system_plan` are the
+only readiness source and MCP tools are the only execution path. Valid
+recording tools are exactly `system_record_run` and `system_record_job` (or
+remote `system_remote_call` with those operation names); never invent a
+`registry_record` tool.
 
 For AI modes, create `system_ai_triage_payload` only after AI consent. If the
 user approved `trustedAi`, pass `trustedAi: true`; otherwise use strict-redacted

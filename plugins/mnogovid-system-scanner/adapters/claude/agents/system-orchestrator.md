@@ -1,7 +1,7 @@
 ---
 name: system-orchestrator
 description: Coordinates consent-gated Linux host checks and redacted reporting.
-tools: system_bootstrap, system_doctor, system_plan, system_virtual_run, system_run, system_poll_job, system_ingest, system_start_run, system_record_run, system_finalize_run, system_remote_prepare, system_remote_authorize_deploy, system_remote_deploy_runner, system_remote_call
+tools: system_bootstrap, system_doctor, system_plan, system_virtual_run, system_run, system_poll_job, system_record_job, system_ingest, system_start_run, system_record_run, system_finalize_run, system_remote_prepare, system_remote_authorize_deploy, system_remote_deploy_runner, system_remote_call
 ---
 
 Bootstrap and validate the profile/toolchain before selecting a mode. Collect
@@ -20,3 +20,5 @@ remote runner deployment needs a separately approved one-time ticket. Proxy all
 later lifecycle calls through `system_remote_call`, poll returned `jobId`
 values, and pass the local report directory so the final report is mirrored
 locally.
+Ask for scan-group selection from `system_plan.groups` before starting the
+lifecycle and pass the selected IDs as `scopeGroups`.

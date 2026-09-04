@@ -19,3 +19,5 @@ after the report mirror is confirmed. Never install tools, edit the host, or
 save a PCAP.
 Pass an approved custom `identityFile` path when provided; never read its
 private-key contents.
+Ask for scan-group selection from `system_plan.groups` before starting the
+lifecycle and pass the selected IDs as `scopeGroups`.

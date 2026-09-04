@@ -39,7 +39,16 @@ class SystemMcpTests(unittest.TestCase):
         self.assertFalse(value["processStarted"])
         self.assertTrue(value["runs"])
         self.assertIn("host", value)
+        self.assertEqual({item["id"] for item in value["groups"]}, set(system_mcp.SCAN_GROUPS))
         self.assertIn("installationGuide", value)
+
+    def test_scope_groups_block_unselected_adapter(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "scopeGroups": ["malware"], "consent": {}}))
+        preview = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "journal-warnings"}))
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": started["runId"], "kind": "preview", "entry": preview})
+        result = system_mcp.call("system_run", {"reportDirectory": self.root, "runId": started["runId"], "adapter": "journal-warnings"})
+        self.assertTrue(result["isError"])
+        self.assertIn("was not selected", payload(result)["error"])
 
     def test_installation_guidance_is_per_detected_host(self) -> None:
         runs = [{"adapter": "lynis", "executable": "lynis", "available": False}]
@@ -196,6 +205,22 @@ class SystemMcpTests(unittest.TestCase):
                 time.sleep(0.05)
             self.assertEqual(result["resultStatus"], "complete")
             self.assertEqual(result["jobId"], started["jobId"])
+        finally:
+            system_mcp.ADAPTERS.pop(adapter, None)
+
+    def test_record_job_persists_normalized_result_without_model_json(self) -> None:
+        adapter = "test-record-job"
+        system_mcp.ADAPTERS[adapter] = {"category": "test", "exe": sys.executable, "network": False, "traffic": False, "background": True, "timeout": 5, "argv": lambda _: ["-c", "print('job evidence')"]}
+        try:
+            started_run = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan", "scopeGroups": ["host"], "consent": {}}))
+            started = system_mcp.start_job(Path(self.root), {"adapter": adapter, "runId": started_run["runId"]})
+            for _ in range(30):
+                result = system_mcp.record_job(Path(self.root), started_run["runId"], started["jobId"])
+                if result["recorded"]: break
+                time.sleep(0.05)
+            self.assertTrue(result["recorded"])
+            run = system_mcp.started_run(Path(self.root), started_run["runId"])
+            self.assertEqual(len(run["scannerResults"]), 1)
         finally:
             system_mcp.ADAPTERS.pop(adapter, None)
 

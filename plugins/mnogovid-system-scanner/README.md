@@ -153,6 +153,17 @@ message is collected from a remote host through the SSH runner. Package names
 are candidates and must be verified for the target distribution; the plugin
 never installs utilities itself.
 
+The workflow then asks which scan groups to enable (host baseline,
+malware/rootkits, integrity/CVEs, containers, services/databases, network
+exposure, and traffic). `system_plan` marks groups with detected runtimes or
+service hints; unselected groups are enforced in the lifecycle and their
+adapters cannot execute. This prevents probing an absent database or starting
+traffic capture when it was not requested.
+
+Long-running jobs expose `system_record_job`, which polls and records the
+normalized result server-side. The agent must not run raw SSH/Bash checks,
+transcribe scanner JSON, or invent recorder names such as `registry_record`.
+
 Reports are written only after `system_finalize_run`:
 
 ```text
