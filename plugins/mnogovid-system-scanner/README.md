@@ -67,7 +67,8 @@ rejected:
 The command asks the user to provide the alias/target; it never enumerates
 aliases by reading `~/.ssh/config`. It asks for explicit connection approval
 before validating an alias, reading `~/.ssh/config`, or connecting. It then connects over
-SSH stdio with agent and forwarding disabled, validates the host key, finds `python3`, and checks the
+SSH stdio with agent and forwarding disabled, validates the host key, finds a
+Python 3 executable (`python3`, `python`, or a common absolute path), and checks the
 fixed runner path under `~/.local/share/mnogovid-system-scanner`. If the runner
 is absent or outdated, it separately asks before deploying or updating it.
 There is no remote MCP port, remote path, Python path, or local TOML to manage.

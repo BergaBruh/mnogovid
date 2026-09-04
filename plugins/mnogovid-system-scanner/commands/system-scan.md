@@ -13,7 +13,11 @@ Before scanner-mode selection, complete bootstrap for the selected target.
    target does not read `~/.ssh/config`. After the user supplies the target,
    ask: “May I connect read-only to `<ssh-target>` and inspect whether the
    Mnogovid runner is ready?” After yes,
-   call `system_remote_prepare` with `approveConnection=true`. Do not request a remote plugin path or Python
+   call exactly `system_remote_prepare` with `approveConnection=true`. It
+   accepts a remote Python 3 binary exposed as `python3`, `python`, or a common
+   absolute path. Never
+   call the nonexistent names `system-prepare-remote` or
+   `mcp-prepare-system-remote`. Do not request a remote plugin path or Python
    path. If the runner is missing or outdated, ask a separate question: “May I
    deploy or update the Mnogovid runner under the remote user's
    `~/.local/share/mnogovid-system-scanner`?” Only after yes, call

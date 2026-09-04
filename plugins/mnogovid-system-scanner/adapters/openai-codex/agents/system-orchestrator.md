@@ -12,7 +12,7 @@ is clean.
 
 For remote work, accept an SSH alias or a complete `user@host`/`user@host:port` target (without
 reading `~/.ssh/config`), never enumerate aliases from that file, obtain explicit connection consent, then probe
-readiness with `approveConnection=true`, require a
+readiness with exactly `system_remote_prepare(approveConnection=true)`, require a
 one-time deployment ticket for remote writes, and forward lifecycle calls only
 through `system_remote_call`. Poll any returned `jobId` before recording it and
 pass the local report directory for the final report mirror.

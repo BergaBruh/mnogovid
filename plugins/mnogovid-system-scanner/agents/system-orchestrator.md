@@ -15,7 +15,8 @@ and metadata-only. Finalize exactly one redacted report.
 For a remote target, accept a configured SSH alias or an explicit `user@host`
 or `user@host:port` target (the latter does not read `~/.ssh/config`). Never read the local SSH
 config to discover aliases. After explicit connection consent, probe it
-read-only with `system_remote_prepare(approveConnection=true)`;
+read-only with exactly `system_remote_prepare(approveConnection=true)`; never
+invent hyphenated tool names such as `system-prepare-remote`;
 if its runner is missing or version-mismatched,
 ask separately before authorizing and consuming a one-time deployment ticket.
 If a command returns a `jobId`, poll it with `system_poll_job` before recording

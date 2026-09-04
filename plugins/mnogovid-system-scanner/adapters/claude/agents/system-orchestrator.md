@@ -12,7 +12,8 @@ tools or alter the host.
 For remote work, accept an SSH alias or a complete `user@host`/`user@host:port` target (which
 does not read `~/.ssh/config`). Never read the local SSH config to enumerate
 aliases. After explicit connection consent, probe
-readiness read-only with `approveConnection=true`;
+readiness read-only with exactly `system_remote_prepare(approveConnection=true)`;
+Do not invent hyphenated aliases for this tool;
 remote runner deployment needs a separately approved one-time ticket. Proxy all
 later lifecycle calls through `system_remote_call`, poll returned `jobId`
 values, and pass the local report directory so the final report is mirrored

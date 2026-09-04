@@ -307,6 +307,19 @@ class SystemMcpTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             system_mcp.remote_call("prod-audit", "system_plan", {"reportDirectory": "/home/audit"})
 
+    @patch.object(system_mcp, "ssh_run")
+    def test_remote_probe_accepts_python3_under_python_name(self, ssh) -> None:
+        probe_status = {"home": "/home/audit", "runnerPath": "/home/audit/.local/share/mnogovid-system-scanner/system_mcp.py", "versionPath": "/home/audit/.local/share/mnogovid-system-scanner/version", "runnerExists": False, "version": None}
+        def reply(alias, args, **kwargs):
+            if args[:2] == ["sh", "-lc"]:
+                return subprocess.CompletedProcess([], 0, "/usr/local/bin/python\n" if "python'" in args[2] or "python\"" in args[2] or args[2].endswith("python") else "", "")
+            if args[0] == "/usr/local/bin/python" and args[1] == "-c" and "version_info" in args[2]:
+                return subprocess.CompletedProcess([], 0, "", "")
+            return subprocess.CompletedProcess([], 0, json.dumps(probe_status), "")
+        ssh.side_effect = reply
+        status = system_mcp.remote_probe("audit@example.invalid:9922")
+        self.assertEqual(status["pythonPath"], "/usr/local/bin/python")
+
     def test_remote_alias_must_be_declared_in_private_ssh_config(self) -> None:
         home = Path(self.root) / "home"
         ssh_dir = home / ".ssh"
