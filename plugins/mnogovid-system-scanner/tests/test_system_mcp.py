@@ -311,6 +311,8 @@ class SystemMcpTests(unittest.TestCase):
     def test_remote_probe_accepts_python3_under_python_name(self, ssh) -> None:
         probe_status = {"home": "/home/audit", "runnerPath": "/home/audit/.local/share/mnogovid-system-scanner/system_mcp.py", "versionPath": "/home/audit/.local/share/mnogovid-system-scanner/version", "runnerExists": False, "version": None}
         def reply(alias, args, **kwargs):
+            if args[0] in {"/usr/bin/python3", "/usr/local/bin/python3"} and args[1] == "-c":
+                return subprocess.CompletedProcess([], 1, "", "not found")
             if args[:2] == ["sh", "-lc"]:
                 return subprocess.CompletedProcess([], 0, "/usr/local/bin/python\n" if "python'" in args[2] or "python\"" in args[2] or args[2].endswith("python") else "", "")
             if args[0] == "/usr/local/bin/python" and args[1] == "-c" and "version_info" in args[2]:

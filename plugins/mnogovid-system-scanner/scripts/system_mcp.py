@@ -36,7 +36,7 @@ PROFILE_NAME = ".mnogovid-system-scanner.json"
 REMOTE_RUNNER_DIR = "~/.local/share/mnogovid-system-scanner"
 REMOTE_RUNNER_SCRIPT = REMOTE_RUNNER_DIR + "/system_mcp.py"
 REMOTE_RUNNER_VERSION = REMOTE_RUNNER_DIR + "/version"
-REMOTE_RUNNER_RELEASE = "2.1.3"
+REMOTE_RUNNER_RELEASE = "2.1.4"
 REMOTE_TIMEOUT = 3600
 TRUSTED_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/sbin", "/usr/local/bin")
 
@@ -983,19 +983,26 @@ def ssh_run(alias: str, remote_args: list[str], *, input_text: str | None = None
 
 def remote_probe(alias: str) -> dict[str, Any]:
     python_path = None
-    for candidate in ("python3", "python", "/usr/bin/python3", "/usr/local/bin/python3"):
-        located = ssh_run(alias, ["sh", "-lc", f"command -v {shlex.quote(candidate)}"], timeout=30)
-        if located.returncode != 0 or not located.stdout.strip():
-            continue
-        path = located.stdout.strip().splitlines()[-1]
+    attempts: list[str] = []
+    for candidate in ("/usr/bin/python3", "/usr/local/bin/python3", "python3", "python"):
+        if candidate.startswith("/"):
+            path = candidate
+        else:
+            located = ssh_run(alias, ["sh", "-lc", f"PATH=\"$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH\"; export PATH; command -v {shlex.quote(candidate)}"], timeout=30)
+            if located.returncode != 0 or not located.stdout.strip():
+                attempts.append(f"{candidate}: command not found ({bounded_text(located.stderr, 120)})")
+                continue
+            path = located.stdout.strip().splitlines()[-1]
         if not re.fullmatch(r"/[A-Za-z0-9_./+-]+", path):
+            attempts.append(f"{candidate}: invalid path returned")
             continue
         version = ssh_run(alias, [path, "-c", "import sys; raise SystemExit(0 if sys.version_info[0] == 3 else 1)"], timeout=30)
         if version.returncode == 0:
             python_path = path
             break
+        attempts.append(f"{candidate} ({path}): not Python 3 ({bounded_text(version.stderr or version.stdout, 120)})")
     if not python_path:
-        raise ValueError("remote alias connected, but no Python 3 executable was found (tried python3, python, /usr/bin/python3, /usr/local/bin/python3)")
+        raise ValueError("remote alias connected, but no Python 3 executable was usable: " + "; ".join(attempts))
     probe_code = "import json, os; root=os.path.expanduser('" + REMOTE_RUNNER_DIR + "'); print(json.dumps({'home':os.path.expanduser('~'),'runnerPath':os.path.join(root,'system_mcp.py'),'versionPath':os.path.join(root,'version'),'runnerExists':os.path.isfile(os.path.join(root,'system_mcp.py')),'version':open(os.path.join(root,'version')).read().strip() if os.path.isfile(os.path.join(root,'version')) else None}))"
     result = ssh_run(alias, [python_path, "-c", probe_code], timeout=30)
     if result.returncode != 0:

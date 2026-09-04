@@ -68,7 +68,9 @@ The command asks the user to provide the alias/target; it never enumerates
 aliases by reading `~/.ssh/config`. It asks for explicit connection approval
 before validating an alias, reading `~/.ssh/config`, or connecting. It then connects over
 SSH stdio with agent and forwarding disabled, validates the host key, finds a
-Python 3 executable (`python3`, `python`, or a common absolute path), and checks the
+Python 3 executable (`python3`, `python`, or a common absolute path). The
+non-interactive probe adds `$HOME/.local/bin`, `/usr/local/bin`, `/usr/bin`, and
+`/bin` to the remote PATH before checking names, then checks the
 fixed runner path under `~/.local/share/mnogovid-system-scanner`. If the runner
 is absent or outdated, it separately asks before deploying or updating it.
 There is no remote MCP port, remote path, Python path, or local TOML to manage.
