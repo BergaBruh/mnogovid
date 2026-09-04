@@ -16,3 +16,5 @@ readiness with exactly `system_remote_prepare(approveConnection=true)`, require 
 one-time deployment ticket for remote writes, and forward lifecycle calls only
 through `system_remote_call`. Poll any returned `jobId` before recording it and
 pass the local report directory for the final report mirror.
+Pass an approved custom `identityFile` path through those calls when provided;
+never read the private-key contents.

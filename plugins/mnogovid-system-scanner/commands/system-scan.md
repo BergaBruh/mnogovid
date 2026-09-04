@@ -16,7 +16,9 @@ Before scanner-mode selection, complete bootstrap for the selected target.
    call exactly `system_remote_prepare` with `approveConnection=true`. It
    accepts a remote Python 3 binary exposed as `python3`, `python`, or a common
    absolute path; its non-interactive probe also checks standard user/system
-   bin directories. Never
+   bin directories. If the user supplied a custom local private key, pass its
+   path as `identityFile` on every remote operation; never read or expose key
+   contents. Never
    call the nonexistent names `system-prepare-remote` or
    `mcp-prepare-system-remote`. Do not request a remote plugin path or Python
    path. If the runner is missing or outdated, ask a separate question: “May I

@@ -347,6 +347,16 @@ class SystemMcpTests(unittest.TestCase):
         self.assertIn("audit@example.invalid", argv)
         self.assertNotIn("audit@example.invalid:9922", argv)
 
+    def test_custom_identity_file_is_passed_without_reading_key(self) -> None:
+        key = Path(self.root) / "audit-key"
+        key.write_text("not-read-by-plugin", encoding="utf-8")
+        key.chmod(0o600)
+        identity = system_mcp.validate_identity_file(str(key))
+        argv = system_mcp.ssh_argv("audit@example.invalid:9922", ["true"], identity)
+        self.assertEqual(identity, str(key))
+        self.assertEqual(argv[argv.index("-i") + 1], str(key))
+        self.assertIn("IdentitiesOnly=yes", argv)
+
     def test_remote_prepare_requires_connection_consent_before_config(self) -> None:
         with patch.object(system_mcp.Path, "home", side_effect=AssertionError("config must not be read")):
             result = system_mcp.call("system_remote_prepare", {"sshAlias": "audit@example.invalid", "approveConnection": False})

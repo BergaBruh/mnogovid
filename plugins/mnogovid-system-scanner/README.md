@@ -57,7 +57,10 @@ separately.
 For the usual setup, define an exact `Host` alias directly in `~/.ssh/config`
 for a dedicated audit account, then use the same unified command and choose
 the remote option. You may instead enter a complete `user@host` or
-`user@host:port` target; that form does not read `~/.ssh/config`. Raw hostnames and wildcard aliases are
+`user@host:port` target; that form does not read `~/.ssh/config`. For a
+config-free target, an optional local `identityFile` path is passed to SSH as
+`-i` after connection consent; the key contents are never read or sent to a
+model. Raw hostnames and wildcard aliases are
 rejected:
 
 ```text

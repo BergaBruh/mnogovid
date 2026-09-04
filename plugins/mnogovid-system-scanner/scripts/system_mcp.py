@@ -158,10 +158,10 @@ TOOLS = [
     {"name": "system_catalog", "description": "List allowlisted Linux host security, exposure, and traffic-observation adapters.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "system_doctor", "description": "Read local OS identity and check allowlisted executable availability. It does not execute a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_bootstrap", "description": "Check the system-scanner profile and local toolchain before a scan. Set createProfile=true only after explicit user approval to create a missing profile; it does not run a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "createProfile": {"type": "boolean"}}, "required": ["reportDirectory"], "additionalProperties": False}},
-    {"name": "system_remote_prepare", "description": "Read-only probe of one SSH alias or explicit user@host target. It requires approveConnection=true after the user explicitly authorizes the connection; only then may it inspect ~/.ssh/config or run SSH.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "approveConnection": {"type": "boolean"}}, "required": ["sshAlias", "approveConnection"], "additionalProperties": False}},
-    {"name": "system_remote_authorize_deploy", "description": "Create a short-lived, one-time deployment ticket after the user explicitly approves deploying or updating the runner on the named SSH host. It does not write remotely.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "approveDeployment": {"type": "boolean"}}, "required": ["sshAlias", "approveDeployment"], "additionalProperties": False}},
+    {"name": "system_remote_prepare", "description": "Read-only probe of one SSH alias or explicit user@host target. It requires approveConnection=true after the user explicitly authorizes the connection; only then may it inspect ~/.ssh/config or run SSH. identityFile is an optional local private-key path; the key contents are never read.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "identityFile": {"type": "string"}, "approveConnection": {"type": "boolean"}}, "required": ["sshAlias", "approveConnection"], "additionalProperties": False}},
+    {"name": "system_remote_authorize_deploy", "description": "Create a short-lived, one-time deployment ticket after the user explicitly approves deploying or updating the runner on the named SSH host. It does not write remotely. identityFile is an optional local private-key path; the key contents are never read.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "identityFile": {"type": "string"}, "approveDeployment": {"type": "boolean"}}, "required": ["sshAlias", "approveDeployment"], "additionalProperties": False}},
     {"name": "system_remote_deploy_runner", "description": "Deploy or update the fixed remote runner under the remote user's ~/.local/share only with a valid one-time deployment ticket. It does not scan the host.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "deploymentId": {"type": "string"}}, "required": ["sshAlias", "deploymentId"], "additionalProperties": False}},
-    {"name": "system_remote_call", "description": "Forward one allowlisted system MCP operation through a prepared SSH alias. Remote scanner and consent enforcement remains inside the remote MCP server; finalized reports are mirrored to the local report directory.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "operation": {"enum": ["system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_poll_job", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"]}, "arguments": {"type": "object"}, "localReportDirectory": {"type": "string"}}, "required": ["sshAlias", "operation", "arguments"], "additionalProperties": False}},
+    {"name": "system_remote_call", "description": "Forward one allowlisted system MCP operation through a prepared SSH alias. Remote scanner and consent enforcement remains inside the remote MCP server; finalized reports are mirrored to the local report directory. identityFile is an optional local private-key path; the key contents are never read.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "identityFile": {"type": "string"}, "operation": {"enum": ["system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_poll_job", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"]}, "arguments": {"type": "object"}, "localReportDirectory": {"type": "string"}}, "required": ["sshAlias", "operation", "arguments"], "additionalProperties": False}},
     {"name": "system_plan", "description": "Create a non-executing plan for all available Linux host scanners and observation tools.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_virtual_run", "description": "Preview one exact allowlisted command without starting it. nmap requires an explicitly authorized IP; image scanners need one image reference; docker-inspect needs one container ID or name.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "adapter"], "additionalProperties": False}},
     {"name": "system_run", "description": "Execute one allowlisted local command without a shell. It requires a started lifecycle and identical preview; root-required, networked, active, traffic, and service probes require matching lifecycle consent. Long adapters return a jobId immediately.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "runId": {"type": "string"}, "adapter": {"type": "string"}, "target": {"type": "string"}, "authorizedTarget": {"type": "boolean"}, "containerId": {"type": "string"}, "imageRef": {"type": "string"}, "interface": {"type": "string"}, "durationSeconds": {"type": "integer"}, "captureFilter": {"type": "string"}}, "required": ["reportDirectory", "runId", "adapter"], "additionalProperties": False}},
@@ -969,26 +969,44 @@ def ssh_target_parts(target: str) -> tuple[str, int | None]:
     return target, None
 
 
-def ssh_argv(alias: str, remote_args: list[str]) -> list[str]:
+def validate_identity_file(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or len(value) > 4096:
+        raise ValueError("identityFile must be a local private-key path")
+    path = Path(value).expanduser()
+    if not path.is_absolute() or path.is_symlink():
+        raise ValueError("identityFile must be an absolute, non-symlinked local path")
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise ValueError("identityFile must be a regular file owned by this user with mode 0600 or stricter")
+    return str(path)
+
+
+def ssh_argv(alias: str, remote_args: list[str], identity_file: str | None = None) -> list[str]:
     target, port = ssh_target_parts(alias)
     options = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "StrictHostKeyChecking=yes"]
+    if "@" in alias:
+        options += ["-F", "/dev/null"]
     if port is not None:
         options += ["-p", str(port)]
+    if identity_file:
+        options += ["-i", identity_file, "-o", "IdentitiesOnly=yes"]
     return [*options, target, " ".join(shlex.quote(arg) for arg in remote_args)]
 
 
-def ssh_run(alias: str, remote_args: list[str], *, input_text: str | None = None, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(ssh_argv(alias, remote_args), input=input_text, capture_output=True, text=True, timeout=timeout, check=False)
+def ssh_run(alias: str, remote_args: list[str], *, input_text: str | None = None, timeout: int = 30, identity_file: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(ssh_argv(alias, remote_args, identity_file), input=input_text, capture_output=True, text=True, timeout=timeout, check=False)
 
 
-def remote_probe(alias: str) -> dict[str, Any]:
+def remote_probe(alias: str, identity_file: str | None = None) -> dict[str, Any]:
     python_path = None
     attempts: list[str] = []
     for candidate in ("/usr/bin/python3", "/usr/local/bin/python3", "python3", "python"):
         if candidate.startswith("/"):
             path = candidate
         else:
-            located = ssh_run(alias, ["sh", "-lc", f"PATH=\"$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH\"; export PATH; command -v {shlex.quote(candidate)}"], timeout=30)
+            located = ssh_run(alias, ["sh", "-lc", f"PATH=\"$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH\"; export PATH; command -v {shlex.quote(candidate)}"], timeout=30, identity_file=identity_file)
             if located.returncode != 0 or not located.stdout.strip():
                 attempts.append(f"{candidate}: command not found ({bounded_text(located.stderr, 120)})")
                 continue
@@ -996,7 +1014,7 @@ def remote_probe(alias: str) -> dict[str, Any]:
         if not re.fullmatch(r"/[A-Za-z0-9_./+-]+", path):
             attempts.append(f"{candidate}: invalid path returned")
             continue
-        version = ssh_run(alias, [path, "-c", "import sys; raise SystemExit(0 if sys.version_info[0] == 3 else 1)"], timeout=30)
+        version = ssh_run(alias, [path, "-c", "import sys; raise SystemExit(0 if sys.version_info[0] == 3 else 1)"], timeout=30, identity_file=identity_file)
         if version.returncode == 0:
             python_path = path
             break
@@ -1004,7 +1022,7 @@ def remote_probe(alias: str) -> dict[str, Any]:
     if not python_path:
         raise ValueError("remote alias connected, but no Python 3 executable was usable: " + "; ".join(attempts))
     probe_code = "import json, os; root=os.path.expanduser('" + REMOTE_RUNNER_DIR + "'); print(json.dumps({'home':os.path.expanduser('~'),'runnerPath':os.path.join(root,'system_mcp.py'),'versionPath':os.path.join(root,'version'),'runnerExists':os.path.isfile(os.path.join(root,'system_mcp.py')),'version':open(os.path.join(root,'version')).read().strip() if os.path.isfile(os.path.join(root,'version')) else None}))"
-    result = ssh_run(alias, [python_path, "-c", probe_code], timeout=30)
+    result = ssh_run(alias, [python_path, "-c", probe_code], timeout=30, identity_file=identity_file)
     if result.returncode != 0:
         raise ValueError("remote runner probe failed: " + bounded_text(result.stderr or result.stdout, 500))
     try:
@@ -1014,22 +1032,22 @@ def remote_probe(alias: str) -> dict[str, Any]:
     return {"sshAlias": alias, "pythonPath": python_path, **status}
 
 
-def deploy_remote_runner(alias: str, python_path: str) -> None:
+def deploy_remote_runner(alias: str, python_path: str, identity_file: str | None = None) -> None:
     source = Path(__file__).read_text(encoding="utf-8")
     version = REMOTE_RUNNER_RELEASE
     payload = base64.b64encode(json.dumps({"script": source, "version": version}).encode()).decode()
     deploy_code = "import base64,json,os,pathlib,sys,tempfile; data=json.loads(base64.b64decode(sys.stdin.buffer.read())); root=pathlib.Path(os.path.expanduser('" + REMOTE_RUNNER_DIR + "')); root.mkdir(parents=True,exist_ok=True); os.chmod(root,0o700); tmp=root/'system_mcp.py.tmp'; tmp.write_text(data['script'],encoding='utf-8'); os.chmod(tmp,0o600); os.replace(tmp,root/'system_mcp.py'); (root/'version').write_text(data['version']+'\\n',encoding='utf-8'); os.chmod(root/'version',0o600)"
-    result = ssh_run(alias, [python_path, "-c", deploy_code], input_text=payload, timeout=60)
+    result = ssh_run(alias, [python_path, "-c", deploy_code], input_text=payload, timeout=60, identity_file=identity_file)
     if result.returncode != 0:
         raise ValueError("remote runner deployment failed: " + bounded_text(result.stderr or result.stdout, 500))
 
 
-def remote_deployment_ticket(alias: str, approved: Any) -> dict[str, Any]:
+def remote_deployment_ticket(alias: str, approved: Any, identity_file: str | None = None) -> dict[str, Any]:
     if approved is not True:
         raise ValueError("remote runner deployment requires approveDeployment=true after explicit user approval")
-    status = remote_probe(alias)
+    status = remote_probe(alias, identity_file)
     deployment_id = secrets.token_hex(16)
-    REMOTE_DEPLOYMENTS[deployment_id] = {"sshAlias": alias, "pythonPath": status["pythonPath"], "expiresAt": time.time() + 600}
+    REMOTE_DEPLOYMENTS[deployment_id] = {"sshAlias": alias, "pythonPath": status["pythonPath"], "identityFile": identity_file, "expiresAt": time.time() + 600}
     return {"deploymentId": deployment_id, "sshAlias": alias, "runnerExists": status["runnerExists"], "expiresInSeconds": 600, "remoteHome": status["home"]}
 
 
@@ -1038,8 +1056,12 @@ def consume_remote_deployment(alias: str, deployment_id: Any) -> dict[str, Any]:
     ticket = REMOTE_DEPLOYMENTS.pop(deployment_id, None)
     if not ticket or ticket["sshAlias"] != alias or ticket["expiresAt"] < time.time():
         raise ValueError("deployment ticket is missing, expired, or belongs to another SSH alias")
-    deploy_remote_runner(alias, ticket["pythonPath"])
-    status = remote_probe(alias)
+    if ticket.get("identityFile"):
+        deploy_remote_runner(alias, ticket["pythonPath"], ticket["identityFile"])
+        status = remote_probe(alias, ticket["identityFile"])
+    else:
+        deploy_remote_runner(alias, ticket["pythonPath"])
+        status = remote_probe(alias)
     return {**status, "deployment": "updated"}
 
 
@@ -1071,12 +1093,12 @@ def mirror_remote_report(response: dict[str, Any], local_report_directory: Any) 
     return result
 
 
-def remote_call(alias: str, operation: str, arguments: dict[str, Any], local_report_directory: Any = None) -> dict[str, Any]:
+def remote_call(alias: str, operation: str, arguments: dict[str, Any], local_report_directory: Any = None, identity_file: str | None = None) -> dict[str, Any]:
     if operation not in {"system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_poll_job", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"}:
         raise ValueError("remote operation is not allowlisted")
     if not isinstance(arguments, dict):
         raise ValueError("remote operation arguments must be an object")
-    status = remote_probe(alias)
+    status = remote_probe(alias, identity_file)
     if not status.get("runnerExists") or status.get("version") != REMOTE_RUNNER_RELEASE:
         raise ValueError("remote runner is missing or outdated; obtain a one-time deployment ticket and call system_remote_deploy_runner after explicit deployment consent")
     launcher = "import os,runpy; runpy.run_path(os.path.expanduser('" + REMOTE_RUNNER_SCRIPT + "'),run_name='__main__')"
@@ -1084,7 +1106,7 @@ def remote_call(alias: str, operation: str, arguments: dict[str, Any], local_rep
     if operation == "system_finalize_run":
         request_arguments["includeReportText"] = True
     request = json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":operation,"arguments":request_arguments}}) + "\n"
-    result = ssh_run(alias, [status["pythonPath"], "-c", launcher], input_text=request, timeout=REMOTE_TIMEOUT)
+    result = ssh_run(alias, [status["pythonPath"], "-c", launcher], input_text=request, timeout=REMOTE_TIMEOUT, identity_file=identity_file)
     if result.returncode != 0:
         raise ValueError("remote MCP call failed: " + bounded_text(result.stderr or result.stdout, 500))
     try:
@@ -1110,16 +1132,19 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if args.get("approveConnection") is not True:
                 raise ValueError("remote connection approval is required before SSH/config inspection")
             alias = validate_ssh_alias(args.get("sshAlias"))
-            return content({**remote_probe(alias), "expectedVersion": REMOTE_RUNNER_RELEASE, "deployment": "not_requested"})
+            identity_file = validate_identity_file(args.get("identityFile"))
+            return content({**remote_probe(alias, identity_file), "expectedVersion": REMOTE_RUNNER_RELEASE, "deployment": "not_requested", "identityFile": identity_file or "ssh-config/agent"})
         if name == "system_remote_authorize_deploy":
             alias = validate_ssh_alias(args.get("sshAlias"))
-            return content(remote_deployment_ticket(alias, args.get("approveDeployment")))
+            identity_file = validate_identity_file(args.get("identityFile"))
+            return content(remote_deployment_ticket(alias, args.get("approveDeployment"), identity_file))
         if name == "system_remote_deploy_runner":
             alias = validate_ssh_alias(args.get("sshAlias"))
             return content(consume_remote_deployment(alias, args.get("deploymentId")))
         if name == "system_remote_call":
             alias = validate_ssh_alias(args.get("sshAlias"))
-            return remote_call(alias, args.get("operation"), args.get("arguments"), args.get("localReportDirectory"))
+            identity_file = validate_identity_file(args.get("identityFile"))
+            return remote_call(alias, args.get("operation"), args.get("arguments"), args.get("localReportDirectory"), identity_file)
         if name in ("system_doctor", "system_plan"):
             root = report_directory(args.get("reportDirectory")); data = plan(root)
             if name == "system_doctor":

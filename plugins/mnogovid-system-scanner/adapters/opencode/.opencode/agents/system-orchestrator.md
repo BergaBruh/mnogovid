@@ -17,3 +17,5 @@ Preview before execution with the active `runId`; poll long jobs and record
 skipped work. For remote scans pass the local report directory and finalize only
 after the report mirror is confirmed. Never install tools, edit the host, or
 save a PCAP.
+Pass an approved custom `identityFile` path when provided; never read its
+private-key contents.

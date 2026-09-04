@@ -17,6 +17,8 @@ or `user@host:port` target (the latter does not read `~/.ssh/config`). Never rea
 config to discover aliases. After explicit connection consent, probe it
 read-only with exactly `system_remote_prepare(approveConnection=true)`; never
 invent hyphenated tool names such as `system-prepare-remote`;
+if a custom local key was provided, pass only its `identityFile` path on every
+remote operation; never read the key contents.
 if its runner is missing or version-mismatched,
 ask separately before authorizing and consuming a one-time deployment ticket.
 If a command returns a `jobId`, poll it with `system_poll_job` before recording

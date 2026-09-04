@@ -14,6 +14,8 @@ does not read `~/.ssh/config`). Never read the local SSH config to enumerate
 aliases. After explicit connection consent, probe
 readiness read-only with exactly `system_remote_prepare(approveConnection=true)`;
 Do not invent hyphenated aliases for this tool;
+if the user supplied a custom local key, pass its `identityFile` path without
+reading the key contents;
 remote runner deployment needs a separately approved one-time ticket. Proxy all
 later lifecycle calls through `system_remote_call`, poll returned `jobId`
 values, and pass the local report directory so the final report is mirrored
