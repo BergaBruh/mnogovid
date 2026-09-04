@@ -36,7 +36,7 @@ PROFILE_NAME = ".mnogovid-system-scanner.json"
 REMOTE_RUNNER_DIR = "~/.local/share/mnogovid-system-scanner"
 REMOTE_RUNNER_SCRIPT = REMOTE_RUNNER_DIR + "/system_mcp.py"
 REMOTE_RUNNER_VERSION = REMOTE_RUNNER_DIR + "/version"
-REMOTE_RUNNER_RELEASE = "2.1.1"
+REMOTE_RUNNER_RELEASE = "2.1.2"
 REMOTE_TIMEOUT = 3600
 TRUSTED_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/sbin", "/usr/local/bin")
 
@@ -927,7 +927,10 @@ def validate_ssh_alias(value: Any) -> str:
         raise ValueError("sshAlias must be a configured alias or an explicit SSH target")
     # An explicit user@host target is self-contained and must not require
     # reading ~/.ssh/config. Strict host-key checking remains enabled below.
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}", value):
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}@[A-Za-z0-9][A-Za-z0-9_.-]{0,191}(?::[0-9]{1,5})?", value) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}@\[[0-9A-Fa-f:]{2,45}\](?::[0-9]{1,5})?", value):
+        _, port = ssh_target_parts(value)
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError("SSH port must be between 1 and 65535")
         return value
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", value):
         raise ValueError("sshAlias must be a configured alias or an explicit user@host SSH target")
@@ -952,8 +955,26 @@ def validate_ssh_alias(value: Any) -> str:
     return value
 
 
+def ssh_target_parts(target: str) -> tuple[str, int | None]:
+    if "@" not in target:
+        return target, None
+    user, host = target.rsplit("@", 1)
+    if host.startswith("["):
+        closing = host.find("]")
+        if closing != -1 and host[closing + 1:].startswith(":"):
+            return f"{user}@{host[:closing + 1]}", int(host[closing + 2:])
+    if host.count(":") == 1 and host.rsplit(":", 1)[1].isdigit():
+        bare, port = host.rsplit(":", 1)
+        return f"{user}@{bare}", int(port)
+    return target, None
+
+
 def ssh_argv(alias: str, remote_args: list[str]) -> list[str]:
-    return ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "StrictHostKeyChecking=yes", alias, " ".join(shlex.quote(arg) for arg in remote_args)]
+    target, port = ssh_target_parts(alias)
+    options = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-o", "StrictHostKeyChecking=yes"]
+    if port is not None:
+        options += ["-p", str(port)]
+    return [*options, target, " ".join(shlex.quote(arg) for arg in remote_args)]
 
 
 def ssh_run(alias: str, remote_args: list[str], *, input_text: str | None = None, timeout: int = 30) -> subprocess.CompletedProcess[str]:

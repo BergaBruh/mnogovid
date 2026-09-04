@@ -8,7 +8,7 @@ Before scanner-mode selection, complete bootstrap for the selected target.
 
 1. **Target:** “Analyze this local host, or a remote SSH alias/target?” If
    remote is chosen, ask the user to provide either a configured alias or a
-   complete `user@host` target. Never read `~/.ssh/config` to discover or list
+   complete `user@host` or `user@host:port` target. Never read `~/.ssh/config` to discover or list
    aliases, and never use a native file-read tool for that purpose. A complete
    target does not read `~/.ssh/config`. After the user supplies the target,
    ask: “May I connect read-only to `<ssh-target>` and inspect whether the

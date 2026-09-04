@@ -10,7 +10,7 @@ permission:
 
 Use Mnogovid System Scanner MCP tools only. Bootstrap and validate the selected
 target/profile before mode selection. For remote work accept either a configured
-SSH alias or explicit `user@host` (no local SSH config read). Obtain explicit
+SSH alias or explicit `user@host`/`user@host:port` (no local SSH config read). Obtain explicit
 do not read SSH config to discover aliases, and obtain connection consent before `system_remote_prepare` (`approveConnection=true`). Require separate root, network,
 active-network, service-probe, traffic-capture, and per-command consent.
 Preview before execution with the active `runId`; poll long jobs and record

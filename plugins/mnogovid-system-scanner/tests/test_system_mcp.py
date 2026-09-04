@@ -323,6 +323,14 @@ class SystemMcpTests(unittest.TestCase):
     def test_explicit_ssh_target_skips_local_config_lookup(self) -> None:
         with patch.object(system_mcp.Path, "home", side_effect=AssertionError("config must not be read")):
             self.assertEqual(system_mcp.validate_ssh_alias("audit@example.invalid"), "audit@example.invalid")
+            self.assertEqual(system_mcp.validate_ssh_alias("audit@example.invalid:9922"), "audit@example.invalid:9922")
+
+    def test_explicit_ssh_target_port_is_passed_to_ssh(self) -> None:
+        argv = system_mcp.ssh_argv("audit@example.invalid:9922", ["sh", "-lc", "command -v python3"])
+        self.assertIn("-p", argv)
+        self.assertEqual(argv[argv.index("-p") + 1], "9922")
+        self.assertIn("audit@example.invalid", argv)
+        self.assertNotIn("audit@example.invalid:9922", argv)
 
     def test_remote_prepare_requires_connection_consent_before_config(self) -> None:
         with patch.object(system_mcp.Path, "home", side_effect=AssertionError("config must not be read")):

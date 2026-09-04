@@ -3,7 +3,7 @@ description: Choose and run consent-gated Linux host assessment mode
 ---
 
 Ask first whether to assess the local host or a configured remote SSH alias or
-explicit `user@host` target, then
+explicit `user@host`/`user@host:port` target, then
 ask which mode to run: adapters only, adapters plus AI triage, or adapters plus
 AI triage and independent review. Obtain separate consent for profile creation,
 passwordless root adapters, network/active-network/service/traffic stages, and

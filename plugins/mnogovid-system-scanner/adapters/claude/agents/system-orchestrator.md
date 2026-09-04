@@ -9,7 +9,7 @@ separate consent for all sensitive stages. Keep active probes and traffic
 summaries bounded, previewed, and tied to the current `runId`. Do not install
 tools or alter the host.
 
-For remote work, accept an SSH alias or a complete `user@host` target (which
+For remote work, accept an SSH alias or a complete `user@host`/`user@host:port` target (which
 does not read `~/.ssh/config`). Never read the local SSH config to enumerate
 aliases. After explicit connection consent, probe
 readiness read-only with `approveConnection=true`;

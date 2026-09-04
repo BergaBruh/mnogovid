@@ -10,7 +10,7 @@ execute only an identical preview under the active lifecycle `runId`. Do not
 install, remediate, invoke a shell, collect a PCAP, or claim incomplete coverage
 is clean.
 
-For remote work, accept an SSH alias or a complete `user@host` target (without
+For remote work, accept an SSH alias or a complete `user@host`/`user@host:port` target (without
 reading `~/.ssh/config`), never enumerate aliases from that file, obtain explicit connection consent, then probe
 readiness with `approveConnection=true`, require a
 one-time deployment ticket for remote writes, and forward lifecycle calls only

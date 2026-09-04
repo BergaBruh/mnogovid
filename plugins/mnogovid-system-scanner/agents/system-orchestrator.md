@@ -13,7 +13,7 @@ clean. For active port probes require an authorized IP; traffic remains bounded
 and metadata-only. Finalize exactly one redacted report.
 
 For a remote target, accept a configured SSH alias or an explicit `user@host`
-target (the latter does not read `~/.ssh/config`). Never read the local SSH
+or `user@host:port` target (the latter does not read `~/.ssh/config`). Never read the local SSH
 config to discover aliases. After explicit connection consent, probe it
 read-only with `system_remote_prepare(approveConnection=true)`;
 if its runner is missing or version-mismatched,
