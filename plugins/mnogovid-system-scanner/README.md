@@ -170,6 +170,13 @@ Long-running jobs expose `system_record_job`, which polls and records the
 normalized result server-side. The agent must not run raw SSH/Bash checks,
 transcribe scanner JSON, or invent recorder names such as `registry_record`.
 
+`system_poll_job` and `system_record_job` accept `waitSeconds` (default 5,
+range 0–10). They return early on completion, or return running after the wait
+so the chat can show progress. This works through `system_remote_call` too;
+put `waitSeconds` inside `arguments`. It reduces rapid polling but cannot
+prevent an AI-provider stream failure. Preserve runId/jobId and check the same
+job after reconnecting, without restarting the scan.
+
 Reports are written only after `system_finalize_run`:
 
 ```text

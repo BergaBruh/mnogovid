@@ -34,6 +34,31 @@ class SystemMcpTests(unittest.TestCase):
         system_mcp.REMOTE_DEPLOYMENTS.clear()
         self.temp.cleanup()
 
+    def test_wait_returns_immediately_for_completed_job(self) -> None:
+        with patch.object(system_mcp, 'poll_job', return_value={'resultStatus': 'complete'}) as poll, patch.object(system_mcp.time, 'sleep') as sleep:
+            self.assertEqual(system_mcp.wait_for_job(Path(self.root), '123', 10)['resultStatus'], 'complete')
+            poll.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_wait_polls_until_completion(self) -> None:
+        with patch.object(system_mcp, 'poll_job', side_effect=[{'resultStatus': 'running'}, {'resultStatus': 'complete'}]) as poll, patch.object(system_mcp.time, 'sleep') as sleep:
+            self.assertEqual(system_mcp.wait_for_job(Path(self.root), '123', 5)['resultStatus'], 'complete')
+            self.assertEqual(poll.call_count, 2)
+            sleep.assert_called_once()
+
+    def test_wait_is_bounded_and_validates_before_polling(self) -> None:
+        with patch.object(system_mcp, 'poll_job', return_value={'resultStatus': 'running'}) as poll, patch.object(system_mcp.time, 'sleep') as sleep:
+            for value in (-1, 11, True, '5', None):
+                with self.assertRaises(ValueError):
+                    system_mcp.wait_for_job(Path(self.root), '123', value)
+            poll.assert_not_called()
+            self.assertEqual(system_mcp.wait_for_job(Path(self.root), '123', 0)['resultStatus'], 'running')
+            sleep.assert_not_called()
+            poll.reset_mock()
+            with patch.object(system_mcp.time, 'monotonic', side_effect=[0, 0, 10]):
+                self.assertEqual(system_mcp.wait_for_job(Path(self.root), '123', 10)['resultStatus'], 'running')
+            self.assertEqual(poll.call_count, 2)
+
     def test_plan_is_non_executing(self) -> None:
         value = payload(system_mcp.call("system_plan", {"reportDirectory": self.root}))
         self.assertFalse(value["processStarted"])

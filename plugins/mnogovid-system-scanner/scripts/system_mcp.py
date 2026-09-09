@@ -36,7 +36,7 @@ PROFILE_NAME = ".mnogovid-system-scanner.json"
 REMOTE_RUNNER_DIR = "~/.local/share/mnogovid-system-scanner"
 REMOTE_RUNNER_SCRIPT = REMOTE_RUNNER_DIR + "/system_mcp.py"
 REMOTE_RUNNER_VERSION = REMOTE_RUNNER_DIR + "/version"
-REMOTE_RUNNER_RELEASE = "2.1.7"
+REMOTE_RUNNER_RELEASE = "2.1.8"
 REMOTE_TIMEOUT = 3600
 TRUSTED_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/sbin", "/usr/local/bin")
 SCAN_GROUPS = {
@@ -183,6 +183,14 @@ TOOLS = [
     {"name": "system_ai_triage_payload", "description": "Produce a bounded finding payload for host-model triage. It never contacts a model. trustedAi=true permits expanded non-secret context after explicit consent; secrets remain scrubbed. Use findingOffset when processing findings in batches.", "inputSchema": {"type": "object", "properties": {"findings": {"type": "array"}, "findingOffset": {"type": "integer", "minimum": 0}, "trustedAi": {"type": "boolean"}}, "required": ["findings"], "additionalProperties": False}},
     {"name": "system_advisory_lookup", "description": "Query OSV for one installed package version only after explicit network approval. It never installs or changes packages.", "inputSchema": {"type": "object", "properties": {"ecosystem": {"type": "string"}, "package": {"type": "string"}, "version": {"type": "string"}, "allowNetwork": {"type": "boolean"}}, "required": ["ecosystem", "package", "version", "allowNetwork"], "additionalProperties": False}},
 ]
+
+
+for tool in TOOLS:
+    if tool['name'] in {'system_poll_job', 'system_record_job'}:
+        tool['inputSchema']['properties']['waitSeconds'] = {
+            'type': 'integer', 'minimum': 0, 'maximum': 10, 'default': 5,
+            'description': 'Wait up to this many seconds for completion; 0 returns immediately. Never restarts the scanner.'}
+        tool['description'] += ' Uses bounded waiting (5 seconds by default, maximum 10); repeat with the same jobId while running.'
 
 
 def report_directory(value: Any) -> Path:
@@ -795,7 +803,19 @@ def poll_job(root: Path, job_id: Any) -> dict[str, Any]:
     return result
 
 
-def record_job(root: Path, run_id: Any, job_id: Any) -> dict[str, Any]:
+def wait_for_job(root: Path, job_id: Any, wait_seconds: Any = 5) -> dict[str, Any]:
+    if type(wait_seconds) is not int or not 0 <= wait_seconds <= 10:
+        raise ValueError('waitSeconds must be an integer from 0 through 10')
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        result = poll_job(root, job_id)
+        remaining = deadline - time.monotonic()
+        if result.get('resultStatus') != 'running' or remaining <= 0:
+            return result
+        time.sleep(min(0.25, remaining))
+
+
+def record_job(root: Path, run_id: Any, job_id: Any, wait_seconds: Any = 5) -> dict[str, Any]:
     if not isinstance(run_id, str) or not run_id.isdigit():
         raise ValueError("runId must be a Unix timestamp")
     if not isinstance(job_id, str):
@@ -804,7 +824,7 @@ def record_job(root: Path, run_id: Any, job_id: Any) -> dict[str, Any]:
     state = json.loads(read_regular_file(job_dir / "job-state.json", MAX_OUTPUT))
     if state.get("runId") != run_id:
         raise ValueError("jobId belongs to a different lifecycle")
-    result = poll_job(root, job_id)
+    result = wait_for_job(root, job_id, wait_seconds)
     if result.get("resultStatus") == "running":
         return {"jobId": job_id, "runId": run_id, "recorded": False, **result}
     run = started_run(root, run_id)
@@ -1261,10 +1281,10 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             return content(result)
         if name == "system_poll_job":
             root = report_directory(args.get("reportDirectory"))
-            return content(poll_job(root, args.get("jobId")))
+            return content(wait_for_job(root, args.get("jobId"), args.get("waitSeconds", 5)))
         if name == "system_record_job":
             root = report_directory(args.get("reportDirectory"))
-            return content(record_job(root, args.get("runId"), args.get("jobId")))
+            return content(record_job(root, args.get("runId"), args.get("jobId"), args.get("waitSeconds", 5)))
         if name == "system_ingest":
             root = report_directory(args.get("reportDirectory"))
             report = private_input_report(root, args.get("report"))

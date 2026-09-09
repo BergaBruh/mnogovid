@@ -65,6 +65,12 @@ previews, scanner results, and batches are idempotent.
 
 ## Boundaries
 
+Polling uses bounded server-side waiting: waitSeconds defaults to 5, accepts
+0..10, and returns early on completion. Repeat system_record_job with the same
+runId/jobId while running; use 0 for an immediate check. Do not invoke shell
+sleep or restart a scanner to wait. Keep those IDs for recovery after a chat
+or API interruption and report progress between calls.
+
 - Never install packages, run remediation, quarantine files, or write PCAPs.
 - Never run arbitrary commands or a shell; use only the adapter allowlist.
 - Every execution requires the current lifecycle `runId` and an argv-identical
@@ -72,3 +78,33 @@ previews, scanner results, and batches are idempotent.
 - A clean report is not proof that the system is uncompromised.
 - Encrypted or unobserved traffic, kernel-level stealth, unavailable tools, and
   distribution backports are explicit coverage gaps.
+
+## Tool discovery and recovery
+
+Before calling a tool, resolve its exact callable name and input schema from
+the current session's available tools. Names in this document are logical MCP
+operation names; the client may expose them with a server/plugin prefix. Use
+the exposed name verbatim. Do not manufacture prefixes, hyphenated aliases, or
+a tool named registry_record.
+
+After "No such tool available" or an unknown-tool response:
+1. Preserve the target, approvals, runId, jobId, and last confirmed result.
+   Do not start a new lifecycle or rerun a scanner.
+2. Check the current tool inventory. If the client exposes a tool-discovery
+   facility, use that registered facility once to locate this plugin's tools.
+   Do not invent a discovery tool or call tools/list as if it were a tool:
+   tools/list is an MCP protocol method, not a model-callable operation.
+3. Retry only when an exact matching tool and its schema are available.
+   For remote work, call the discovered system_remote_call tool with the
+   logical operation inside operation (system_record_run or system_record_job
+   for recording); keep identityFile, target, and report directories unchanged.
+4. If discovery is unavailable, the tool is absent, or the corrected call still
+   fails with an unknown-tool error, stop this workflow and report the missing
+   tool and saved IDs. Ask the user to reconnect/reload the plugin in the client.
+   Do not fall back to Bash, raw SSH, generated Python/JSON-RPC scripts, direct
+   state-file edits, or guessed tool names.
+
+This procedure does not authorize retrying a permission denial or bypassing
+host policy. A transport timeout leaves execution status uncertain: inspect
+the saved job through a registered status tool after reconnection rather than
+restarting it.
