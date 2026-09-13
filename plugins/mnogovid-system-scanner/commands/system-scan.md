@@ -4,6 +4,16 @@ description: Choose and run a consent-gated local or remote Linux security asses
 
 Run one unified system-scanner workflow. Do not require command arguments.
 
+Scanner evidence is saved server-side. Synchronous system_run results are
+recorded automatically; system_record_job records completed background jobs.
+Before triage/finalization the server collects pending results and refuses to
+continue while jobs are running. Use system_read_run to inspect saved results.
+Return findingId unchanged in every AI/reviewer note; numeric indexes alone
+are insufficient for new evidence. Never synthesize scanner entries or Python
+generators. Reports retain the full document up to 16 MiB; over-limit reports
+fail explicitly while retaining state. Finalized state stays readable and
+repeat finalization returns the same report.
+
 Before scanner-mode selection, complete bootstrap for the selected target.
 
 1. **Target:** “Analyze this local host, or a remote SSH alias/target?” If
@@ -71,6 +81,13 @@ active Nmap probes, local service probes, traffic capture, every scanner
 command, host-AI sharing (AI modes), and independent review (review mode).
 Treat anything but an unambiguous yes as denial.
 
+Before ClamAV, select the total runtime budget (1–60 minutes, default 60).
+Use the same timeoutSeconds in preview and execution. The approved command
+runs trusted GNU timeout under sudo: TERM at the deadline, KILL after 5 seconds.
+Sudo policy must permit that wrapper. Record timeout results as incomplete;
+partial findings are retained. Silence with --infected --no-summary is normal,
+and an AI stream interruption does not mean the scanner must be killed.
+
 Use bootstrap's doctor result and then call `system_plan`; start exactly one
 lifecycle; preview every adapter; and execute only an identical, recorded
 preview with that lifecycle `runId`. When `system_run` returns a `jobId`, use
@@ -97,10 +114,15 @@ remote `system_remote_call` with those operation names); never invent a
 For AI modes, create `system_ai_triage_payload` only after AI consent. If the
 user approved `trustedAi`, pass `trustedAi: true`; otherwise use strict-redacted
 mode. Secrets, credentials, private keys, and auth headers remain scrubbed in
-both modes. For more
-than 40 findings, pass the full redacted list with `findingOffset` 0, 40, 80,
+both modes. Read saved results with system_read_run (one scanner per page).
+For AI batches pass reportDirectory, runId and findingOffset; omit findings.
+For more than 40 findings, use `findingOffset` 0, 40, 80,
 and so on, and record each returned batch with the same `findingOffset`; the
 server merges batches and rejects missing indexes at finalization. For
+failed checks, read their exitCode and stderrSnippet before explaining the
+cause; do not guess a missing database or signature issue from counts alone.
+Never generate Python to read transcripts, private job logs, or run-state.json.
+Use system_read_run and system_ai_triage_payload for these data instead. For
 independent review, ask a final separate consent, then keep scanner, host-AI,
 and reviewer evidence distinct. Finalize once and return the local report path
 and coverage gaps. A remote finalize response includes `storedLocally: true`;

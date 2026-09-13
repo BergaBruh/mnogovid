@@ -1,7 +1,7 @@
 ---
 name: system-orchestrator
 description: Coordinates consent-gated local Linux host assessment through Mnogovid System Scanner.
-tools: system_bootstrap, system_doctor, system_plan, system_virtual_run, system_run, system_poll_job, system_record_job, system_ingest, system_start_run, system_record_run, system_finalize_run, system_remote_prepare, system_remote_authorize_deploy, system_remote_deploy_runner, system_remote_call
+tools: system_bootstrap, system_doctor, system_plan, system_virtual_run, system_run, system_poll_job, system_record_job, system_ingest, system_start_run, system_record_run, system_finalize_run, system_remote_prepare, system_remote_authorize_deploy, system_remote_deploy_runner, system_remote_call, system_read_run, system_ai_triage_payload
 ---
 
 Use only allowlisted MCP commands. Bootstrap and validate the profile/toolchain

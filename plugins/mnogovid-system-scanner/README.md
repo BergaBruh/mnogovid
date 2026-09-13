@@ -1,5 +1,15 @@
 # Mnogovid System Scanner
 
+Scanner evidence is saved server-side. Synchronous system_run results are
+recorded automatically; system_record_job records completed background jobs.
+Before triage/finalization the server collects pending results and refuses to
+continue while jobs are running. Use system_read_run to inspect saved results.
+Return findingId unchanged in every AI/reviewer note; numeric indexes alone
+are insufficient for new evidence. Never synthesize scanner entries or Python
+generators. Reports retain the full document up to 16 MiB; over-limit reports
+fail explicitly while retaining state. Finalized state stays readable and
+repeat finalization returns the same report.
+
 Mnogovid System Scanner is a consent-gated Linux host assessment plugin. It
 orchestrates installed local tools and records redacted evidence; it never
 installs software, applies a fix, deletes/quarantines a file, saves PCAPs, or
@@ -41,6 +51,13 @@ remain mandatory. Reload plugins or restart Claude Code after installing an
 update.
 
 ## Run
+
+Before ClamAV, select the total runtime budget (1–60 minutes, default 60).
+Use the same timeoutSeconds in preview and execution. The approved command
+runs trusted GNU timeout under sudo: TERM at the deadline, KILL after 5 seconds.
+Sudo policy must permit that wrapper. Record timeout results as incomplete;
+partial findings are retained. Silence with --infected --no-summary is normal,
+and an AI stream interruption does not mean the scanner must be killed.
 
 Install it from the Mnogovid marketplace, then use one of the native Codex
 commands:
@@ -183,10 +200,22 @@ Reports are written only after `system_finalize_run`:
 <report-directory>/.mnogovid/system-scanner/<timestamp>/result.md
 ```
 
-The report is reader-first: verdict, actionable findings, coverage gaps with
-recovery guidance, scanner coverage, security-relevant observations, recorded
-consent, and distinct AI/independent-review sections. A failed, missing, or
-declined adapter is a coverage gap—not a clean result.
+The report is reader-first: verdict, executive summary, actionable findings,
+severity/status tables, text bar charts with Mermaid chart equivalents,
+coverage-by-group, a bounded group-to-adapter-to-evidence relationship graph,
+coverage gaps with recovery guidance, scanner coverage,
+security-relevant observations, recorded consent, and distinct AI/independent-
+review tables. Transport JSON is kept out of `result.md`; structured lifecycle
+state remains in the private `run-state.json`. Priority findings get a
+bug-report-style detail block: summary, evidence reference, verification step,
+impact boundary, and conditional mitigation guidance; lower-priority findings
+remain in the overview table. AI/reviewer comments are shown next to priority
+findings, while the report keeps only aggregate classification counts for the
+rest. The final
+`Sources and manual verification` section maps lifecycle, scanner-result, and
+finding IDs back to `system_read_run` and explains what can be checked in an
+external advisory database. A failed, missing, or declined adapter is a
+coverage gap—not a clean result.
 
 ## AI and independent review
 
@@ -198,8 +227,11 @@ The lifecycle also has a separate `trustedAi` consent. When enabled, the
 selected AI can receive expanded non-secret diagnostics; credentials, tokens,
 private keys, and authentication headers are still scrubbed.
 
-AI triage payloads are capped at 40 findings per call. Use the same full
-finding list with `findingOffset` batches; the server merges them, ignores
+Read saved results with system_read_run(reportDirectory, runId, scannerOffset).
+It returns one scanner per page, including exit code and retained diagnostics.
+AI triage payloads are capped at 40 findings per call. Pass reportDirectory,
+runId and findingOffset, without findings, to read stored evidence directly;
+the server merges recorded AI batches, ignores
 duplicate records, and requires complete index coverage before finalization.
 
 Use `system_ingest` to normalize a pre-existing private local JSON or SARIF

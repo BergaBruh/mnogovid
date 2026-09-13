@@ -9,6 +9,8 @@ automatic external port probing.
 from __future__ import annotations
 
 import base64
+import hashlib
+import fcntl
 import ipaddress
 import json
 import os
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_OUTPUT = 256 * 1024
+MAX_REPORT = 16 * 1024 * 1024
 RUNS: dict[str, dict[str, Any]] = {}
 JOBS: dict[str, dict[str, Any]] = {}
 REMOTE_DEPLOYMENTS: dict[str, dict[str, Any]] = {}
@@ -36,7 +39,7 @@ PROFILE_NAME = ".mnogovid-system-scanner.json"
 REMOTE_RUNNER_DIR = "~/.local/share/mnogovid-system-scanner"
 REMOTE_RUNNER_SCRIPT = REMOTE_RUNNER_DIR + "/system_mcp.py"
 REMOTE_RUNNER_VERSION = REMOTE_RUNNER_DIR + "/version"
-REMOTE_RUNNER_RELEASE = "2.1.8"
+REMOTE_RUNNER_RELEASE = "2.1.9"
 REMOTE_TIMEOUT = 3600
 TRUSTED_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/sbin", "/usr/local/bin")
 SCAN_GROUPS = {
@@ -185,7 +188,19 @@ TOOLS = [
 ]
 
 
+TOOLS.append({'name': 'system_read_run', 'description': 'Read saved scanner results and diagnostics by lifecycle ID, without shell commands or transcript parsing. Does not execute scanners.', 'inputSchema': {'type': 'object', 'properties': {'reportDirectory': {'type': 'string'}, 'runId': {'type': 'string'}, 'scannerOffset': {'type': 'integer', 'minimum': 0}}, 'required': ['reportDirectory', 'runId'], 'additionalProperties': False}})
 for tool in TOOLS:
+    if tool['name'] == 'system_remote_call':
+        tool['inputSchema']['properties']['operation']['enum'].append('system_read_run')
+    if tool['name'] == 'system_ai_triage_payload':
+        tool['inputSchema']['properties'].update({'reportDirectory': {'type': 'string'}, 'runId': {'type': 'string'}})
+        tool['inputSchema'].pop('required', None)
+        tool['inputSchema']['oneOf'] = [{'required': ['reportDirectory', 'runId'], 'not': {'required': ['findings']}}, {'required': ['findings'], 'not': {'anyOf': [{'required': ['runId']}, {'required': ['reportDirectory']}]}}]
+        tool['description'] = 'Read the next AI batch from a saved lifecycle using reportDirectory, runId and findingOffset. Prefer this over the legacy findings input. Never reconstruct findings from transcripts.'
+    if tool['name'] in {'system_virtual_run', 'system_run'}:
+        tool['inputSchema']['properties']['timeoutSeconds'] = {
+            'type': 'integer', 'minimum': 60, 'maximum': 3600, 'default': 3600,
+            'description': 'ClamAV only: total runtime budget. Silence is not a hang. Included in the approved command.'}
     if tool['name'] in {'system_poll_job', 'system_record_job'}:
         tool['inputSchema']['properties']['waitSeconds'] = {
             'type': 'integer', 'minimum': 0, 'maximum': 10, 'default': 5,
@@ -437,6 +452,10 @@ def safe_text(value: Any, limit: int = 500) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("|", "\\|").replace("[", "\\[").replace("]", "\\]").replace("(", "\\(").replace(")", "\\)")
 
 
+def markdown_code(value: Any, limit: int = 500) -> str:
+    return bounded_text(value, limit).replace("`", "\\`")
+
+
 def safe_json(value: Any) -> str:
     return json.dumps(redact(value), ensure_ascii=True, indent=2).replace("`", "\\u0060").replace("<", "\\u003c").replace(">", "\\u003e")
 
@@ -471,7 +490,7 @@ def normalize_entry(kind: str, entry: dict[str, Any], finding_count: int) -> dic
             raise ValueError("scanner entry requires resultStatus and integer exitCode")
         findings = entry.get("findings", [])
         observations = entry.get("observations", [])
-        if not isinstance(findings, list) or not isinstance(observations, list):
+        if not isinstance(findings, list) or not isinstance(observations, list) or any(not isinstance(item, str) for item in observations):
             raise ValueError("scanner findings and observations must be arrays")
         normalized_findings = []
         for item in findings[:200]:
@@ -479,6 +498,11 @@ def normalize_entry(kind: str, entry: dict[str, Any], finding_count: int) -> dic
             normalized_findings.append({"adapter": adapter, "ruleId": bounded_text(item.get("ruleId", item.get("id", "")), 160), "severity": bounded_text(item.get("severity", "review"), 40), "title": bounded_text(item.get("title", "")), "location": bounded_text(item.get("location", item.get("path", "")), 512), "line": item.get("line") if isinstance(item.get("line"), int) else None, "library": bounded_text(item.get("library", item.get("package", "")), 160), "installedVersion": bounded_text(item.get("installedVersion", item.get("version", "")), 160), "fixedVersion": bounded_text(item.get("fixedVersion", ""), 160)})
         result.update({"resultStatus": entry["resultStatus"], "exitCode": entry["exitCode"], "requiresRoot": bool(entry.get("requiresRoot")), "requiresNetwork": bool(entry.get("requiresNetwork")), "requiresActiveNetwork": bool(entry.get("requiresActiveNetwork")), "requiresTrafficCapture": bool(entry.get("requiresTrafficCapture")), "requiresServiceProbe": bool(entry.get("requiresServiceProbe")), "findings": normalized_findings, "observations": [bounded_text(item) for item in observations[:200] if isinstance(item, str)]})
         result["counts"] = {"findings": len(result["findings"]), "observations": len(result["observations"])}
+        result['stderrSnippet'] = bounded_text(entry.get('stderrSnippet', ''), 2000)
+        if entry.get('timedOut') is True:
+            result.update({'timedOut': True, 'partial': True, 'resultStatus': 'incomplete'})
+        if entry.get('outputTruncated') is True:
+            result.update({'outputTruncated': True, 'partial': True, 'resultStatus': 'incomplete'})
         return result
     notes = entry.get("findingNotes")
     offset = entry.get("findingOffset", 0)
@@ -504,10 +528,22 @@ def command(ident: str, args: dict[str, Any]) -> tuple[dict[str, Any], list[str]
     if ident not in ADAPTERS:
         raise ValueError(f"unknown adapter: {ident}")
     spec = ADAPTERS[ident]
+    if 'timeoutSeconds' in args and ident != 'clamav':
+        raise ValueError('timeoutSeconds is supported only for clamav')
+    if ident == 'clamav':
+        budget = args.get('timeoutSeconds', 3600)
+        if type(budget) is not int or not 60 <= budget <= 3600:
+            raise ValueError('timeoutSeconds must be an integer from 60 through 3600')
+        spec = {**spec, 'timeout': budget + 15}
     exe = trusted_executable(spec["exe"]) if spec.get("requiresRoot") else (shutil.which(spec["exe"]) or spec["exe"])
     if spec.get("requiresRoot") and not exe:
         raise ValueError(f"root-required adapter executable is unavailable or not trusted: {spec['exe']}")
     argv = [exe, *spec["argv"](args)]
+    if ident == 'clamav':
+        timeout_exe = trusted_executable('timeout')
+        if not timeout_exe:
+            raise ValueError('ClamAV requires a trusted GNU timeout executable for privileged timeout enforcement')
+        argv = [timeout_exe, '--signal=TERM', '--kill-after=5s', f'{budget}s', *argv]
     if spec.get("requiresRoot"):
         sudo = trusted_executable("sudo")
         if not sudo:
@@ -537,6 +573,7 @@ def normalize_output(adapter: str, output: str) -> tuple[list[dict[str, Any]], l
     A listening socket or enabled unit is evidence to review, not proof of a
     compromise.  Only adapter-specific warning signatures become findings.
     """
+    output = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output)
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     patterns: dict[str, re.Pattern[str]] = {
         "lynis": re.compile(r"\b(WARNING|SUGGESTION)\b", re.I),
@@ -548,11 +585,15 @@ def normalize_output(adapter: str, output: str) -> tuple[list[dict[str, Any]], l
         "rpm-verify": re.compile(r"^[.A-Z?]{8,9}\s"),
         "osquery": re.compile(r".+"),
         "nmap-local": re.compile(r"\bopen\b", re.I),
-        "debsums": re.compile(r"^\S+\s+\S+"),
+        "debsums": re.compile(r"^/"),
         "journal-warnings": re.compile(r".+"),
     }
     matcher = patterns.get(adapter)
     matched = [line for line in lines if matcher and matcher.search(line)]
+    if adapter == 'chkrootkit':
+        matched = [line for line in matched if not re.search(r'\bnot (?:infected|vulnerable)\b', line, re.I)]
+    if adapter == 'journal-warnings':
+        matched = [line for line in matched if not line.startswith('--')]
     findings = [{"adapter": adapter, "severity": "review", "title": line[:500]} for line in matched[:200]]
     observations = [line[:500] for line in lines[:200] if line not in matched]
     return findings, observations
@@ -692,6 +733,94 @@ def scanner_recovery(run: dict[str, Any]) -> str:
     return steps.get(adapter, "Rerun the identical previewed command after resolving the recorded diagnostic.") + (f" Diagnostic: {diagnostic}" if diagnostic else "")
 
 
+def markdown_bar(value: int, maximum: int, width: int = 24) -> str:
+    """Return a portable, text-only bar for Markdown viewers without charts."""
+    if value <= 0 or maximum <= 0:
+        return "—"
+    return "█" * max(1, round(value / maximum * width))
+
+
+def assessment_summary(title: str, assessment: Any) -> list[str]:
+    """Render compact AI/reviewer counts; detailed notes stay by priority finding."""
+    if not isinstance(assessment, dict):
+        return []
+    notes = assessment.get("findingNotes", [])
+    if not isinstance(notes, list):
+        return []
+    counts: dict[str, int] = {}
+    for note in notes:
+        if isinstance(note, dict):
+            classification = str(note.get("classification", "needs_review"))
+            counts[classification] = counts.get(classification, 0) + 1
+    lines = [f"### {title}", "", "Это advisory-оценка, а не подтверждённый факт сканера.", "", "| Классификация | Находок |", "| --- | ---: |"]
+    for classification, count in sorted(counts.items()):
+        lines.append(f"| {safe_text(classification, 40)} | {count} |")
+    if not counts:
+        lines.append("| not assessed | 0 |")
+    lines.append("")
+    return lines
+
+
+def mermaid_label(value: Any, limit: int = 80) -> str:
+    """Keep evidence-derived labels safe for a Mermaid flowchart node."""
+    return (bounded_text(value, limit).replace('"', "'").replace("`", "'").replace("[", "(").replace("]", ")").replace("{", "(").replace("}", ")").replace("\n", " ") or "—")
+
+
+def relationship_graph(scanners: list[dict[str, Any]], skipped: list[dict[str, Any]], selected: list[str]) -> tuple[list[str], list[str]]:
+    """Build a bounded group -> adapter -> evidence-component relationship view."""
+    category_to_group = {category: group for group, data in SCAN_GROUPS.items() for category in data["categories"]}
+    relationships: list[tuple[str, str, str, int]] = []
+    for scanner in scanners:
+        adapter = str(scanner.get("adapter", "unknown"))
+        group = category_to_group.get(str(scanner.get("category", "")), "host")
+        findings = scanner.get("findings", []) if isinstance(scanner.get("findings"), list) else []
+        components: dict[str, int] = {}
+        for finding in findings:
+            if isinstance(finding, dict):
+                component = finding_location_or_library(finding)
+                components[component] = components.get(component, 0) + 1
+        if not components:
+            relationships.append((group, adapter, "no normalized finding", 0))
+        else:
+            relationships.extend((group, adapter, component, count) for component, count in components.items())
+    for item in skipped:
+        adapter = str(item.get("adapter", "unknown"))
+        group = next((group for group, data in SCAN_GROUPS.items() if any(ADAPTERS.get(adapter, {}).get("category") == category for category in data["categories"])), "host")
+        relationships.append((group, adapter, "skipped", 0))
+    relationships = [item for item in relationships if item[0] in selected]
+    relationships = relationships[:100]
+    table = ["## Relationship graph", "", "Связи показывают только записанные результаты и выбранные группы; это не граф причинности или доказательство эксплуатации. Таблица остаётся читаемой, если Markdown-клиент не поддерживает Mermaid.", "", "| Group | Adapter | Evidence component | Findings |", "| --- | --- | --- | ---: |"]
+    table.extend(f"| {safe_text(group, 40)} | {safe_text(adapter, 80)} | {safe_text(component, 180)} | {count} |" for group, adapter, component, count in relationships)
+    if not relationships:
+        table.append("| — | — | No recorded relationships | 0 |")
+    graph = ["```mermaid", "flowchart LR"]
+    groups = {group for group, _, _, _ in relationships}
+    group_ids = {group: f"g{index}" for index, group in enumerate(sorted(groups))}
+    adapters = {(group, adapter) for group, adapter, _, _ in relationships}
+    adapter_ids = {key: f"a{index}" for index, key in enumerate(sorted(adapters))}
+    components = sorted({component for _, _, component, _ in relationships})[:60]
+    component_ids = {component: f"c{index}" for index, component in enumerate(components)}
+    for group, ident in group_ids.items():
+        graph.append(f'    {ident}["{mermaid_label(group)}"]')
+    for (group, adapter), ident in adapter_ids.items():
+        scanner = next((item for item in scanners if item.get("adapter") == adapter), {})
+        status = scanner.get("resultStatus", "skipped")
+        graph.append(f'    {ident}["{mermaid_label(adapter)} ({mermaid_label(status, 30)})"]')
+        graph.append(f"    {group_ids[group]} --> {ident}")
+    for component, ident in component_ids.items():
+        graph.append(f'    {ident}["{mermaid_label(component)}"]')
+    for group, adapter, component, _ in relationships:
+        if component in component_ids:
+            graph.append(f"    {adapter_ids[(group, adapter)]} --> {component_ids[component]}")
+    if len({component for _, _, component, _ in relationships}) > len(component_ids):
+        graph.append('    more["additional components omitted"]')
+        for group, adapter, component, _ in relationships:
+            if component not in component_ids:
+                graph.append(f"    {adapter_ids[(group, adapter)]} --> more")
+    graph.append("```")
+    return table + [""] , graph + [""]
+
+
 def completed_result(base: dict[str, Any], spec: dict[str, Any], ident: str, return_code: int, output: str, error: str) -> dict[str, Any]:
     if ident == "docker-inspect":
         findings, observations = normalize_docker_inspect(output)
@@ -704,6 +833,15 @@ def completed_result(base: dict[str, Any], spec: dict[str, Any], ident: str, ret
     else:
         findings, observations = normalize_output(ident, output)
     status = "complete" if return_code == 0 or return_code == 1 and findings else "incomplete" if return_code == 1 else "failed"
+    if ident == 'debsums':
+        status = 'complete' if return_code in (0, 2) else 'failed'
+    elif ident == 'aide':
+        status = 'complete' if 0 <= return_code <= 7 else 'failed'
+    elif ident == 'clamav':
+        status = 'complete' if return_code in (0, 1) else 'failed'
+    if not findings and ((ident == 'debsums' and return_code == 2) or (ident == 'aide' and 1 <= return_code <= 7) or (ident == 'clamav' and return_code == 1)):
+        findings.append({'adapter': ident, 'severity': 'review', 'title': f'Scanner exit code {return_code} reports findings; details could not be parsed'})
+        status = 'incomplete'
     snippets = {"stdoutSnippet": output[:4000], "stderrSnippet": error[:4000]} if not spec.get("sensitiveOutput") else ({"stdoutSnippet": bounded_text(output, 4000), "stderrSnippet": bounded_text(error, 4000)} if spec.get("trustedAi") else {"stdoutSnippet": "[WITHHELD: normalized security fields only]", "stderrSnippet": "[WITHHELD: normalized security fields only]"})
     return redact({**base, "execution": "executed", "processStarted": True, "resultStatus": status, "exitCode": return_code, "findings": findings, "observations": observations, "counts": {"findings": len(findings), "observations": len(observations)}, **snippets})
 
@@ -787,10 +925,16 @@ def poll_job(root: Path, job_id: Any) -> dict[str, Any]:
             pass
         return {"jobId": job_id, "execution": "running", "resultStatus": "running", "processStarted": True, "pollAfterSeconds": 5}
     result_meta = json.loads(read_regular_file(result_path, MAX_OUTPUT))
-    output = read_regular_file(Path(job["stdoutPath"]), MAX_OUTPUT)
-    error = read_regular_file(Path(job["stderrPath"]), MAX_OUTPUT)
+    output = read_job_output(Path(job["stdoutPath"]))
+    error = read_job_output(Path(job["stderrPath"]))
     result = completed_result(job["base"], job["spec"], job["adapter"], int(result_meta.get("exitCode", 125)), output, error)
     result["jobId"] = job_id
+    if any(Path(job[key]).stat().st_size > MAX_OUTPUT for key in ('stdoutPath', 'stderrPath')):
+        result.update({'outputTruncated': True, 'partial': True, 'resultStatus': 'incomplete'})
+    if result_meta.get('timedOut') or (job['adapter'] == 'clamav' and result['exitCode'] in (124, 137)):
+        result.update({'timedOut': True, 'partial': True, 'resultStatus': 'incomplete'})
+        result['observations'].append('Scan interrupted by runtime limit or forced termination; coverage is incomplete.')
+        result['counts']['observations'] = len(result['observations'])
     local_job = JOBS.get(job_id)
     if local_job:
         try:
@@ -803,6 +947,16 @@ def poll_job(root: Path, job_id: Any) -> dict[str, Any]:
     return result
 
 
+def read_job_output(path: Path) -> str:
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('job output must be a regular file')
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    with os.fdopen(fd, 'rb') as handle:
+        data = handle.read(MAX_OUTPUT + 1)
+    return data[:MAX_OUTPUT].decode('utf-8', errors='replace') + ('\n[output truncated]' if len(data) > MAX_OUTPUT else '')
+
+
 def wait_for_job(root: Path, job_id: Any, wait_seconds: Any = 5) -> dict[str, Any]:
     if type(wait_seconds) is not int or not 0 <= wait_seconds <= 10:
         raise ValueError('waitSeconds must be an integer from 0 through 10')
@@ -813,6 +967,21 @@ def wait_for_job(root: Path, job_id: Any, wait_seconds: Any = 5) -> dict[str, An
         if result.get('resultStatus') != 'running' or remaining <= 0:
             return result
         time.sleep(min(0.25, remaining))
+
+
+def store_scanner(run: dict[str, Any], result: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    normalized = normalize_entry('scanner', result, 0)
+    key = hashlib.sha256(json.dumps([normalized['adapter'], normalized['command']], sort_keys=True).encode()).hexdigest()
+    normalized['resultId'] = key
+    for index, finding in enumerate(normalized['findings']):
+        finding['findingId'] = hashlib.sha256(json.dumps([run['startedAt'], key, index, finding], sort_keys=True).encode()).hexdigest()
+    for previous in run['scannerResults']:
+        if previous.get('resultId') == key:
+            if previous != normalized:
+                raise ValueError('Recorded scanner evidence is immutable; use a new lifecycle for a new scan')
+            return previous, True
+    run['scannerResults'].append(normalized)
+    return normalized, False
 
 
 def record_job(root: Path, run_id: Any, job_id: Any, wait_seconds: Any = 5) -> dict[str, Any]:
@@ -828,12 +997,58 @@ def record_job(root: Path, run_id: Any, job_id: Any, wait_seconds: Any = 5) -> d
     if result.get("resultStatus") == "running":
         return {"jobId": job_id, "runId": run_id, "recorded": False, **result}
     run = started_run(root, run_id)
-    normalized = normalize_entry("scanner", result, sum(len(item.get("findings", [])) for item in run["scannerResults"]))
-    duplicate = duplicate_record(run["scannerResults"], "scanner", normalized)
+    normalized, duplicate = store_scanner(run, result)
     if not duplicate:
-        run["scannerResults"].append(normalized)
         save_run(root, run_id, run)
-    return {"jobId": job_id, "runId": run_id, "recorded": True, "duplicate": duplicate, "resultStatus": normalized["resultStatus"], "counts": normalized["counts"]}
+    return {"jobId": job_id, "runId": run_id, "recorded": True, "duplicate": duplicate, "resultStatus": normalized["resultStatus"], "counts": normalized["counts"], 'exitCode': normalized['exitCode'], 'stderrSnippet': normalized.get('stderrSnippet', ''), 'timedOut': normalized.get('timedOut', False), 'nextTool': 'system_read_run'}
+
+
+def reconcile_results(root: Path, run_id: str, run: dict[str, Any]) -> None:
+    pending = []
+    known_jobs = {e.get('jobId') for e in run.get('executions', {}).values()}
+    for child in (root / '.mnogovid' / 'system-scanner').iterdir():
+        state_file = child / 'job-state.json'
+        if child.name.isdigit() and not child.is_symlink() and state_file.is_file():
+            job = json.loads(read_regular_file(state_file, MAX_REPORT))
+            if job.get('runId') == run_id and child.name not in known_jobs:
+                run.setdefault('executions', {})['recovered:' + child.name] = {'jobId': child.name}
+    for execution in run.get('executions', {}).values():
+        if 'jobId' in execution:
+            result = poll_job(root, execution['jobId'])
+            if result.get('resultStatus') == 'running':
+                pending.append(execution['jobId'])
+                continue
+        else:
+            result = execution.get('result')
+        if result:
+            store_scanner(run, result)
+    save_run(root, run_id, run)
+    if pending:
+        raise ValueError('Scanner jobs still running; record/poll these jobs before triage or finalize: ' + ', '.join(pending))
+
+
+def normalize_assessment(run: dict[str, Any], kind: str, entry: dict[str, Any]) -> dict[str, Any]:
+    permission = 'aiTriage' if kind == 'host_ai_triage' else 'agentReview'
+    if run.get('consent', {}).get(permission) is not True:
+        raise ValueError('Assessment consent is required')
+    findings = [f for s in run['scannerResults'] for f in s.get('findings', [])]
+    if findings and all('findingId' in f for f in findings):
+        lookup = {f['findingId']: i for i, f in enumerate(findings)}
+        notes = entry.get('findingNotes')
+        if not isinstance(notes, list) or not notes:
+            raise ValueError('findingNotes must contain findings identified by findingId')
+        seen = set()
+        normalized = []
+        for note in notes:
+            ident = note.get('findingId') if isinstance(note, dict) else None
+            if ident not in lookup or ident in seen:
+                raise ValueError('Unknown or duplicate findingId; read the lifecycle AI batch again')
+            seen.add(ident)
+            clean = normalize_entry(kind, {'findingNotes': [{**note, 'findingIndex': 0}], 'findingOffset': lookup[ident]}, len(findings))['findingNotes'][0]
+            clean['findingId'] = ident
+            normalized.append(clean)
+        return {'findingNotes': normalized}
+    return normalize_entry(kind, entry, len(findings))
 
 
 def state_path(root: Path, run_id: Any) -> Path:
@@ -893,8 +1108,10 @@ def existing_lifecycle(root: Path, mode: str, consent: dict[str, bool], scope_gr
         if not state.is_file() or state.is_symlink():
             continue
         try:
-            run = json.loads(read_regular_file(state, MAX_OUTPUT))
+            run = json.loads(read_regular_file(state, MAX_REPORT))
         except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if run.get('finalizedReport'):
             continue
         if run.get("reportDirectory") != str(root):
             continue
@@ -938,40 +1155,127 @@ def existing_job(root: Path, run_id: str, adapter: str, argv: list[str]) -> str 
     return None
 
 
-def render_report(root: Path, run: dict[str, Any], report_id: str) -> str:
+def render_report(root: Path, run: dict[str, Any], report_id: str, lifecycle_id: str | None = None) -> str:
     scanners = run["scannerResults"]
     findings = [finding for scanner in scanners for finding in scanner.get("findings", []) if isinstance(finding, dict)]
     notes = {item["findingIndex"]: item for item in (run.get("hostAiTriage") or {}).get("findingNotes", []) if isinstance(item, dict) and isinstance(item.get("findingIndex"), int)}
+    agent_notes = {item["findingIndex"]: item for item in (run.get("agentReview") or {}).get("findingNotes", []) if isinstance(item, dict) and isinstance(item.get("findingIndex"), int)}
     completed = [item for item in scanners if item.get("resultStatus") == "complete"]
     incomplete = [item for item in scanners if item.get("resultStatus") == "incomplete"]
     failed = [item for item in scanners if item.get("resultStatus") == "failed"]
+    skipped = run.get("skippedScanners", [])
+    status_counts = {"complete": len(completed), "incomplete": len(incomplete), "failed": len(failed), "skipped": len(skipped)}
+    severity_counts: dict[str, int] = {}
+    for finding in findings:
+        severity = str(finding.get("severity", "review") or "review").strip().lower()
+        severity = severity if severity in {"critical", "high", "medium", "low", "review", "info"} else "review"
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+    severity_order = ("critical", "high", "medium", "low", "review", "info")
+    max_severity = max(severity_counts.values(), default=1)
     classifications = [str(item.get("classification", "")).lower() for item in notes.values()]
     if any(item == "true_positive" for item in classifications):
         verdict, explanation = "ACTION REQUIRED", "At least one host finding was assessed as likely real; review it before remediation."
-    elif findings or incomplete or failed or run["skippedScanners"]:
+    elif findings or incomplete or failed or skipped:
         verdict, explanation = "REVIEW REQUIRED", "Findings or incomplete coverage require human verification; this is not proof of compromise or cleanliness."
     else:
         verdict, explanation = "NO FINDINGS REPORTED", "Completed checks reported no normalized findings. Unobserved traffic and kernel-level stealth remain coverage limits."
-    selected_groups = ", ".join(run.get("scopeGroups", list(SCAN_GROUPS)))
-    lines = ["# Mnogovid System Scanner report", "", "## Verdict", "", f"**{verdict}.** {explanation}", "", "| Report directory | Mode | Selected groups | Findings | Completed scanners | Incomplete / failed |", "| --- | --- | --- | --- | --- | --- |", f"| {safe_text(root, 512)} | {safe_text(run['mode'], 40)} | {safe_text(selected_groups, 300)} | {len(findings)} | {len(completed)} | {len(incomplete) + len(failed)} |", "", "## What needs attention", ""]
+    selected = run.get("scopeGroups", list(SCAN_GROUPS))
+    selected_groups = ", ".join(selected)
+    generated = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    lines = [
+        "# Mnogovid System Scanner report", "",
+        "## Verdict", "", f"**{verdict}.** {explanation}", "",
+        "## Executive summary", "",
+        "| Metric | Value | Interpretation |", "| --- | ---: | --- |",
+        f"| Findings | {len(findings)} | Normalized security findings recorded |",
+        f"| Observations | {sum(len(item.get('observations', [])) for item in scanners)} | Telemetry/inventory, not findings by themselves |",
+        f"| Scanners complete | {len(completed)} | Exit status accepted as complete |",
+        f"| Coverage gaps | {len(incomplete) + len(failed) + len(skipped)} | Incomplete, failed, or skipped checks |",
+        f"| Selected groups | {safe_text(selected_groups, 300)} | Scope approved for this lifecycle |",
+        "", "| Report directory | Mode | Started | Report ID |", "| --- | --- | --- | --- |",
+        f"| {safe_text(root, 512)} | {safe_text(run['mode'], 40)} | {safe_text(run.get('startedAt', '—'), 40)} | {safe_text(report_id, 80)} |",
+        "", "## What needs attention", ""
+    ]
     if not findings:
         lines += ["No normalized findings were recorded. Review coverage gaps before treating the host as clean.", ""]
-    for index, finding in enumerate(findings):
+    else:
+        lines += ["### Findings overview", "", "| # | Severity | Scanner | Title | Location / package | Finding ID | AI triage | Agent review |", "| ---: | --- | --- | --- | --- | --- | --- | --- |"]
+        for index, finding in enumerate(findings):
+            note = notes.get(index)
+            classification = note.get("classification", "not assessed") if note else "not assessed"
+            agent_classification = agent_notes.get(index, {}).get("classification", "not assessed")
+            finding_id = str(finding.get("findingId") or "not assigned")
+            lines.append(f"| {index + 1} | {safe_text(finding.get('severity', 'review'), 40)} | {safe_text(finding.get('adapter', 'unknown'), 80)} | {safe_text(finding_title(finding), 180)} | {safe_text(finding_location_or_library(finding), 180)} | `{markdown_code(finding_id[:12], 20)}` | {safe_text(classification, 40)} | {safe_text(agent_classification, 40)} |")
+        lines.append("")
+    lines += ["## Findings by severity", "", "| Severity | Count | Share | Graph |", "| --- | ---: | ---: | --- |"]
+    for severity in severity_order:
+        count = severity_counts.get(severity, 0)
+        share = f"{count / len(findings) * 100:.1f}%" if findings else "0.0%"
+        lines.append(f"| {severity} | {count} | {share} | {markdown_bar(count, max_severity)} |")
+    lines += ["", "```mermaid", "xychart-beta", '    title "Findings by severity"', '    x-axis ["Critical", "High", "Medium", "Low", "Review", "Info"]', f'    y-axis "Findings" 0 --> {max(max_severity, 1)}', f"    bar [{', '.join(str(severity_counts.get(item, 0)) for item in severity_order)}]", "```", ""]
+    lines += ["## Scanner status", "", "| Status | Scanners | Graph |", "| --- | ---: | --- |"]
+    for status in ("complete", "incomplete", "failed", "skipped"):
+        lines.append(f"| {status} | {status_counts[status]} | {markdown_bar(status_counts[status], max(status_counts.values(), default=1))} |")
+    lines += ["", "```mermaid", "xychart-beta", '    title "Scanner status"', '    x-axis ["Complete", "Incomplete", "Failed", "Skipped"]', f'    y-axis "Scanners" 0 --> {max(max(status_counts.values(), default=1), 1)}', f"    bar [{', '.join(str(status_counts[item]) for item in ('complete', 'incomplete', 'failed', 'skipped'))}]", "```", ""]
+    lines += ["## Coverage by group", "", "| Group | Selected | Planned adapters | Recorded | Complete | Gaps |", "| --- | --- | ---: | ---: | ---: | ---: |"]
+    for group, metadata in SCAN_GROUPS.items():
+        planned = [ident for ident, spec in ADAPTERS.items() if spec.get("category") in metadata["categories"]]
+        recorded = [item for item in scanners if item.get("adapter") in planned]
+        group_gaps = sum(item.get("resultStatus") in {"incomplete", "failed"} for item in recorded) + sum(item.get("adapter") in planned for item in skipped)
+        lines.append(f"| {safe_text(group, 40)} | {'yes' if group in selected else 'no'} | {len(planned)} | {len(recorded)} | {sum(item.get('resultStatus') == 'complete' for item in recorded)} | {group_gaps} |")
+    lines.append("")
+    relationship_table, relationship_chart = relationship_graph(scanners, skipped, selected)
+    lines += relationship_table + relationship_chart
+    lines += ["## Scope and methodology", "", "| Item | Recorded value |", "| --- | --- |", f"| Target directory | {safe_text(root, 512)} |", f"| Mode | {safe_text(run.get('mode', '—'), 40)} |", f"| Selected groups | {safe_text(selected_groups, 300)} |", "| Execution | Allowlisted commands, consent-gated and read-only |", "| Exploitation | Not performed |", "| Remediation | Not performed |", ""]
+    lines += ["## Evidence and attachments", "", "| Artifact | Status |", "| --- | --- |", "| Normalized scanner records | Included in the private lifecycle state |", "| Finding IDs and scanner status | Included above for traceability |", "| Raw logs and packet captures | Not embedded or stored by this workflow |", "| Screenshots / video | Not captured by this workflow |", ""]
+    priority_classes = {"true_positive", "needs_review"}
+    priority_indices = [
+        index for index, finding in enumerate(findings)
+        if str(finding.get("severity", "review")).lower() in {"critical", "high"}
+        or str(notes.get(index, {}).get("classification", "")).lower() in priority_classes
+        or str(agent_notes.get(index, {}).get("classification", "")).lower() in priority_classes
+    ]
+    priority_indices = sorted(set(priority_indices), key=lambda index: (0 if str(findings[index].get("severity", "review")).lower() == "critical" else 1, index))
+    detailed_indices = priority_indices[:50]
+    lines += ["## Detailed findings", "", "Показаны приоритетные находки: critical/high и оценки AI/reviewer `true_positive` или `needs_review`. Полный список остаётся в таблице выше.", ""]
+    if len(priority_indices) > len(detailed_indices):
+        lines.append(f"Подробности ограничены первыми {len(detailed_indices)} находками; ещё {len(priority_indices) - len(detailed_indices)} доступны через их Evidence ID и `system_read_run`.")
+        lines.append("")
+    if not detailed_indices:
+        lines += ["Нет приоритетных находок для подробного разбора.", ""]
+    for index in detailed_indices:
+        finding = findings[index]
         note = notes.get(index)
-        lines += [f"### {index + 1}. {safe_text(finding_title(finding))}", "", f"**Scanner:** {safe_text(finding.get('adapter', 'unknown'), 80)}  ", f"**Severity:** {safe_text(finding.get('severity', 'review'), 40)}  ", f"**Location / package:** {safe_text(finding_location_or_library(finding), 512)}  "]
+        agent_note = agent_notes.get(index)
+        scanner = next((item for item in scanners if item.get('adapter') == finding.get('adapter')), {})
+        command = (scanner.get('command') or {}).get('argv') if isinstance(scanner.get('command'), dict) else []
+        finding_id = finding.get('findingId') or 'not assigned'
+        rule_id = finding.get('ruleId') or finding.get('id') or 'not recorded'
+        result_id = scanner.get('resultId') or 'not recorded'
+        lines += [f"### {index + 1}. {safe_text(finding_title(finding))}", "", "| Field | Value |", "| --- | --- |", f"| Summary | {safe_text(finding_title(finding), 1000)} |", f"| Scanner | {safe_text(finding.get('adapter', 'unknown'), 80)} |", f"| Severity | {safe_text(finding.get('severity', 'review'), 40)} |", f"| Evidence location / package | {safe_text(finding_location_or_library(finding), 512)} |", f"| Rule / advisory ID | {safe_text(rule_id, 160)} |", f"| CVSS | Not calculated by the adapter |", f"| Evidence ID | `{markdown_code(finding_id, 80)}` |", f"| Scanner result ID | `{markdown_code(result_id, 80)}` |", ""]
+        lines += ["**Observed evidence:** the normalized scanner record contains this finding. Raw scanner output is not reproduced here; use the saved lifecycle evidence for the exact bounded record.", ""]
+        if command:
+            lines += [f"**Verification step:** rerun the recorded `{safe_text(finding.get('adapter', 'unknown'), 80)}` adapter only after a new lifecycle approval; the exact previewed argv is retained in the lifecycle, not reconstructed by the report.", ""]
+        lines += ["**Potential impact:** the scanner identifies a condition to review; exploitability and business impact were not established by this read-only assessment.", ""]
         if finding.get("installedVersion"):
             lines.append(f"**Installed version:** {safe_text(finding.get('installedVersion'), 160)}  ")
         if finding.get("fixedVersion"):
             lines.append(f"**Fixed version:** {safe_text(finding.get('fixedVersion'), 160)}  ")
+            lines.append(f"**Mitigation:** review the distribution/vendor advisory and update to `{markdown_code(finding.get('fixedVersion'), 160)}` through the normal change process; this workflow does not modify the host.")
+        else:
+            lines.append("**Mitigation:** validate the finding with the service/package owner and apply vendor hardening guidance if confirmed; this workflow does not modify the host.")
+        lines.append("")
         if note:
             lines += [f"**AI assessment:** {safe_text(note.get('classification', 'needs_review'), 40)} (confidence: {note.get('confidence', 'not provided')})  ", f"**Why it matters:** {safe_text(note.get('note', 'No detailed note recorded.'), 2000)}", ""]
-        else:
+        if agent_note:
+            lines += [f"**Independent review:** {safe_text(agent_note.get('classification', 'needs_review'), 40)} (confidence: {safe_text(agent_note.get('confidence', 'not provided'), 40)})  ", f"**Reviewer note:** {safe_text(agent_note.get('note', 'No detailed note recorded.'), 2000)}", ""]
+        if not note and not agent_note:
             lines += ["**Next step:** verify this host observation with a separate read-only check before treating it as malicious or benign.", ""]
-    if incomplete or failed or run["skippedScanners"]:
+    if incomplete or failed or skipped:
         lines += ["## Coverage gaps", ""]
         for item in incomplete + failed:
             lines.append(f"- **{safe_text(item.get('adapter', 'unknown'), 80)}:** {safe_text(item.get('resultStatus', 'unknown'), 40)}; {safe_text(scanner_recovery(item), 1200)}")
-        for item in run["skippedScanners"]:
+        for item in skipped:
             lines.append(f"- **{safe_text(item.get('adapter', 'unknown'), 80)}:** skipped; {safe_text(item.get('reason', 'not run'), 1200)}")
         lines.append("")
     lines += ["## Scan coverage", "", "| Scanner | Result | Findings | Observations | Access |", "| --- | --- | --- | --- | --- |"]
@@ -986,23 +1290,27 @@ def render_report(root: Path, run: dict[str, Any], report_id: str) -> str:
         lines += ["## Security-relevant observations", "", "These items are inventory or telemetry, not findings by themselves.", ""]
         lines += [f"- {safe_text(observation)}" for observation in observations[:200]]
         lines.append("")
-    lines += ["", "## Scope and consent", "", "```json", safe_json(run["consent"]), "```", ""]
-    if run.get("hostAiTriage"):
-        lines += ["## Host AI triage (advisory)", "", "```json", safe_json(run["hostAiTriage"]), "```", ""]
-    if run.get("agentReview"):
-        lines += ["## Independent agent review (advisory)", "", "```json", safe_json(run["agentReview"]), "```", ""]
-    lines += ["## Report details", "", "| Report ID | Generated | AI analysis | Independent review |", "| --- | --- | --- | --- |", f"| {report_id} | {datetime.now(timezone.utc).replace(microsecond=0).isoformat()} | {'included' if run.get('hostAiTriage') else 'not requested'} | {'included' if run.get('agentReview') else 'not requested'} |", ""]
+    lines += ["", "## Scope and consent", "", "| Permission | Granted |", "| --- | --- |"]
+    for key, value in sorted(run.get("consent", {}).items()):
+        lines.append(f"| {safe_text(key, 80)} | {'yes' if value is True else 'no'} |")
+    lines.append("")
+    if run.get("hostAiTriage") or run.get("agentReview"):
+        lines += ["## AI conclusions summary", "", "Подробные комментарии показаны только в приоритетных находках; эта секция содержит только агрегированные количества.", ""]
+        lines += assessment_summary("Host AI triage (advisory)", run.get("hostAiTriage"))
+        lines += assessment_summary("Independent agent review (advisory)", run.get("agentReview"))
+    lines += ["## Sources and manual verification", "", "| Source | Identifier | How to inspect |", "| --- | --- | --- |", f"| Lifecycle evidence | `{markdown_code(lifecycle_id or 'not available', 80)}` | Call `system_read_run` with this report directory and lifecycle ID; use the returned scanner result and finding IDs. |", "| Scanner previews and results | adapter + scanner result ID | Compare the recorded preview with the completed result; do not reconstruct output from the chat transcript. |", "| Finding evidence | 12-character ID prefix in the overview; full ID in priority details | Locate the exact finding in the saved lifecycle result. |", "| Rule/advisory | rule or advisory ID shown above | Check the vendor or distribution advisory database yourself; no external verdict is implied by this report. |", "| Raw logs / PCAP | not stored | This workflow withholds raw sensitive output and never writes packet captures. |", ""]
+    lines += ["## Report details", "", "| Report ID | Generated | AI analysis | Independent review |", "| --- | --- | --- | --- |", f"| {report_id} | {generated} | {'included' if run.get('hostAiTriage') else 'not requested'} | {'included' if run.get('agentReview') else 'not requested'} |", ""]
     return "\n".join(lines)
 
 
-def write_report(root: Path, run: dict[str, Any]) -> dict[str, Any]:
+def write_report(root: Path, run: dict[str, Any], lifecycle_id: str | None = None) -> dict[str, Any]:
     report_id = str(time.time_ns())
     destination_root = run_directory(root, report_id, create=True)
     destination = destination_root / "result.md"
-    document = render_report(root, run, report_id)
-    truncated = len(document.encode("utf-8")) > MAX_OUTPUT
-    if truncated:
-        document = document.encode("utf-8")[:MAX_OUTPUT].decode("utf-8", "ignore") + "\n\n_Report truncated at storage limit._\n"
+    document = render_report(root, run, report_id, lifecycle_id)
+    if len(document.encode('utf-8')) > MAX_REPORT:
+        raise ValueError('Report exceeds 16 MiB; lifecycle retained, no truncated report written')
+    truncated = False
     atomic_write(destination, document, replace=False)
     return {"reportId": report_id, "path": str(destination), "redacted": True, "truncated": truncated}
 
@@ -1170,7 +1478,13 @@ def mirror_remote_report(response: dict[str, Any], local_report_directory: Any) 
         return result
     local_root = report_directory(local_report_directory if isinstance(local_report_directory, str) else os.getcwd())
     destination = run_directory(local_root, report_id, create=True) / "result.md"
-    atomic_write(destination, report_text[:MAX_OUTPUT], replace=False)
+    if len(report_text.encode('utf-8')) > MAX_REPORT:
+        raise ValueError('Remote report exceeds local report size limit')
+    if destination.exists():
+        if read_regular_file(destination, MAX_REPORT) != report_text:
+            raise ValueError('Existing local report differs; refusing overwrite')
+    else:
+        atomic_write(destination, report_text, replace=False)
     payload["remotePath"] = payload.get("path")
     payload["path"] = str(destination)
     payload["storedLocally"] = True
@@ -1179,7 +1493,7 @@ def mirror_remote_report(response: dict[str, Any], local_report_directory: Any) 
 
 
 def remote_call(alias: str, operation: str, arguments: dict[str, Any], local_report_directory: Any = None, identity_file: str | None = None) -> dict[str, Any]:
-    if operation not in {"system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_poll_job", "system_record_job", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"}:
+    if operation not in {"system_read_run", "system_bootstrap", "system_doctor", "system_plan", "system_virtual_run", "system_run", "system_poll_job", "system_record_job", "system_ingest", "system_start_run", "system_record_run", "system_finalize_run", "system_ai_triage_payload", "system_advisory_lookup"}:
         raise ValueError("remote operation is not allowlisted")
     if not isinstance(arguments, dict):
         raise ValueError("remote operation arguments must be an object")
@@ -1210,9 +1524,39 @@ def content(value: Any, error: bool = False) -> dict[str, Any]:
 
 
 def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    # Remote bridge processes share state files: serialize their local dispatch.
+    if name.startswith('system_remote_') or 'reportDirectory' not in args:
+        return dispatch(name, args)
+    try:
+        root = report_directory(args['reportDirectory'])
+        directory = root / '.mnogovid'
+        ensure_private_directory(directory)
+        fd = os.open(directory / 'system-scanner.lock', os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        with os.fdopen(fd, 'r+') as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+                raise ValueError('Unsafe lifecycle lock file')
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            RUNS.clear()
+            if name in {'system_run', 'system_record_run', 'system_record_job'} and args.get('runId'):
+                if started_run(root, args['runId']).get('finalizedReport'):
+                    raise ValueError('Lifecycle is finalized; saved evidence is read-only')
+            return dispatch(name, args)
+    except (ValueError, OSError) as exc:
+        return content({'error': str(exc)}, True)
+
+
+def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "system_catalog":
             return content({"adapters": [{"id": key, "category": value["category"], "executable": value["exe"], "requiresRoot": value.get("requiresRoot", False), "requiresNetwork": value.get("network", False), "requiresActiveNetwork": value.get("active", False), "requiresTrafficCapture": value.get("traffic", False), "requiresServiceProbe": value.get("serviceProbe", False)} for key, value in ADAPTERS.items()], "safety": "No remediation, installations, arbitrary commands, PCAP files, or unapproved root/network/service probes. Sensitive service and Docker output is normalized before it is returned."})
+        if name == 'system_read_run':
+            root = report_directory(args.get('reportDirectory'))
+            run = started_run(root, args.get('runId'))
+            offset = args.get('scannerOffset', 0)
+            if type(offset) is not int or not 0 <= offset <= len(run['scannerResults']):
+                raise ValueError('scannerOffset is outside saved results')
+            return content(redact({'runId': args['runId'], 'scannerCount': len(run['scannerResults']), 'scannerOffset': offset, 'nextOffset': offset + 1 if offset + 1 < len(run['scannerResults']) else None, 'scannerResults': run['scannerResults'][offset:offset + 1], 'skippedScanners': run['skippedScanners'], 'scopeGroups': run.get('scopeGroups', []), 'findingCount': sum(len(s.get('findings', [])) for s in run['scannerResults'])}))
         if name == "system_remote_prepare":
             if args.get("approveConnection") is not True:
                 raise ValueError("remote connection approval is required before SSH/config inspection")
@@ -1277,6 +1621,7 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                 executions[fingerprint] = {"jobId": result["jobId"]}
             else:
                 executions[fingerprint] = {"result": result}
+                store_scanner(run, result)
             save_run(root, str(args.get("runId")), run)
             return content(result)
         if name == "system_poll_job":
@@ -1318,13 +1663,30 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if kind not in ("scanner", "preview", "skipped", "host_ai_triage", "agent_review") or not isinstance(entry, dict):
                 raise ValueError("kind and entry are required")
             finding_count = sum(len(item.get("findings", [])) for item in run["scannerResults"])
-            normalized = normalize_entry(kind, entry, finding_count)
-            if kind == "host_ai_triage":
-                previous = run.get("hostAiTriage") or {"findingNotes": []}
+            if kind in ('host_ai_triage', 'agent_review'):
+                reconcile_results(root, str(run_id), run)
+                normalized = normalize_assessment(run, kind, entry)
+            elif kind == 'scanner':
+                candidates = [e['result'] for e in run.get('executions', {}).values() if 'result' in e]
+                for e in run.get('executions', {}).values():
+                    if 'jobId' in e:
+                        candidates.append(poll_job(root, e['jobId']))
+                if candidates:
+                    supplied = normalize_entry(kind, entry, finding_count)
+                    if not any(r.get('resultStatus') != 'running' and normalize_entry(kind, r, finding_count) == supplied for r in candidates):
+                        raise ValueError('Scanner evidence does not match saved execution; use system_record_job/system_read_run')
+                    normalized, duplicate = store_scanner(run, entry)
+                    save_run(root, str(run_id), run)
+                    return content({'runId': run_id, 'recorded': kind, 'duplicate': duplicate})
+                raise ValueError('No saved execution matches this evidence; run the approved scanner through MCP')
+            else:
+                normalized = normalize_entry(kind, entry, finding_count)
+            if kind in ('host_ai_triage', 'agent_review'):
+                assessment_key = 'hostAiTriage' if kind == 'host_ai_triage' else 'agentReview'
+                previous = run.get(assessment_key) or {"findingNotes": []}
                 by_index = {item["findingIndex"]: item for item in previous.get("findingNotes", []) if isinstance(item, dict) and isinstance(item.get("findingIndex"), int)}
                 for item in normalized["findingNotes"]: by_index[item["findingIndex"]] = item
-                run["hostAiTriage"] = {"findingNotes": [by_index[index] for index in sorted(by_index)]}
-            elif kind == "agent_review": run["agentReview"] = normalized
+                run[assessment_key] = {"findingNotes": [by_index[index] for index in sorted(by_index)]}
             else:
                 key = {"scanner": "scannerResults", "preview": "virtualCommands", "skipped": "skippedScanners"}[kind]
                 if duplicate_record(run[key], kind, normalized):
@@ -1334,13 +1696,19 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
             return content({"runId": run_id, "recorded": kind})
         if name == "system_finalize_run":
             root = report_directory(args.get("reportDirectory")); run_id = args.get("runId"); run = started_run(root, run_id)
+            if run.get('finalizedReport'):
+                result = {'runId': run_id, 'path': run['finalizedReport'], 'reportId': Path(run['finalizedReport']).parent.name, 'finalized': True, 'truncated': False, 'redacted': True}
+                if args.get('includeReportText') is True:
+                    result['reportText'] = read_regular_file(Path(result['path']), MAX_REPORT)
+                return content(result)
+            reconcile_results(root, str(run_id), run)
             finding_count = sum(len(item.get("findings", [])) for item in run["scannerResults"])
             if args.get("hostAiTriage") is not None:
                 if not isinstance(args["hostAiTriage"], dict): raise ValueError("hostAiTriage must be an object")
-                run["hostAiTriage"] = normalize_entry("host_ai_triage", args["hostAiTriage"], finding_count)
+                run["hostAiTriage"] = normalize_assessment(run, 'host_ai_triage', args['hostAiTriage'])
             if args.get("agentReview") is not None:
                 if not isinstance(args["agentReview"], dict): raise ValueError("agentReview must be an object")
-                run["agentReview"] = normalize_entry("agent_review", args["agentReview"], finding_count)
+                run["agentReview"] = normalize_assessment(run, 'agent_review', args['agentReview'])
             if run["mode"] in ("scan-ai", "scan-agent") and run["consent"].get("aiTriage") is True:
                 notes = (run.get("hostAiTriage") or {}).get("findingNotes", [])
                 expected = set(range(finding_count))
@@ -1349,19 +1717,37 @@ def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     raise ValueError(f"record host AI triage for every finding before finalizing (missing {len(expected - actual)})")
             if run["mode"] == "scan-agent" and run["consent"].get("agentReview") is True and not run.get("agentReview"):
                 raise ValueError("record approved agent review before finalizing")
-            result = write_report(root, run)
+            if run['mode'] == 'scan-agent' and run['consent'].get('agentReview') is True:
+                reviewed = {n.get('findingIndex') for n in run['agentReview'].get('findingNotes', [])}
+                if reviewed != set(range(finding_count)):
+                    raise ValueError('Independent review must cover every recorded finding before finalization')
+            result = write_report(root, run, str(run_id))
             if args.get("includeReportText") is True:
-                result["reportText"] = (Path(result["path"]).read_text(encoding="utf-8"))[:MAX_OUTPUT]
-            state_path(root, run_id).unlink(missing_ok=True); RUNS.pop(str(run_id), None)
+                result["reportText"] = read_regular_file(Path(result['path']), MAX_REPORT)
+            run['finalizedReport'] = result['path']
+            save_run(root, str(run_id), run)
+            RUNS.pop(str(run_id), None)
             return content({**result, "runId": run_id, "finalized": True})
         if name == "system_ai_triage_payload":
-            findings = redact(args.get("findings"))
+            if 'runId' in args or 'reportDirectory' in args:
+                if 'findings' in args:
+                    raise ValueError('Use a saved lifecycle or findings, not both')
+                root = report_directory(args.get('reportDirectory'))
+                run = started_run(root, args.get('runId'))
+                if run['consent'].get('aiTriage') is not True:
+                    raise ValueError('AI triage consent is required')
+                if args.get('trustedAi') is True and run['consent'].get('trustedAi') is not True:
+                    raise ValueError('trustedAi consent is required')
+                reconcile_results(root, str(args['runId']), run)
+                findings = redact([f for scanner in run['scannerResults'] for f in scanner.get('findings', [])])
+            else:
+                findings = redact(args.get("findings"))
             if not isinstance(findings, list): raise ValueError("findings must be an array")
             offset = args.get("findingOffset", 0)
             if not isinstance(offset, int) or offset < 0 or offset > len(findings):
                 raise ValueError("findingOffset must be a non-negative integer within the supplied finding set")
             trusted = args.get("trustedAi") is True
-            return content({"findingLimit": min(len(findings), 40), "findingOffset": offset, "privacyMode": "trusted-ai" if trusted else "strict-redacted", "findings": findings[offset:offset + 40], "instruction": "Analyze only supplied evidence. Return findingNotes in zero-based order for this batch and include findingOffset when recording the batch. Use classification (true_positive, false_positive, needs_review), numeric confidence 0..1 (or low/medium/high), and a detailed evidence note. Do not request secrets or suggest automatic remediation. The trusted-ai mode may include expanded non-secret diagnostics, but secrets remain scrubbed."})
+            return content({'findingCount': len(findings), 'findingLimit': len(findings[offset:offset + 40]), 'findingOffset': offset, 'nextOffset': offset + 40 if offset + 40 < len(findings) else None, 'privacyMode': 'trusted-ai' if trusted else 'strict-redacted', 'findings': findings[offset:offset + 40], 'instruction': 'Return findingNotes with each supplied findingId unchanged, classification (true_positive, false_positive, needs_review), confidence 0..1, and an evidence-based note. Never generate scanner evidence or infer identity from index alone. Legacy findings without IDs use batch-local findingIndex and findingOffset. Secrets remain scrubbed.'})
         if name == "system_advisory_lookup":
             if args.get("allowNetwork") is not True:
                 raise ValueError("OSV advisory lookup requires allowNetwork=true")

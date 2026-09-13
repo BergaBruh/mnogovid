@@ -5,6 +5,16 @@ description: Run approved Linux host checks, then analyze bounded evidence with 
 
 # Linux system scan with AI triage
 
+Scanner evidence is saved server-side. Synchronous system_run results are
+recorded automatically; system_record_job records completed background jobs.
+Before triage/finalization the server collects pending results and refuses to
+continue while jobs are running. Use system_read_run to inspect saved results.
+Return findingId unchanged in every AI/reviewer note; numeric indexes alone
+are insufficient for new evidence. Never synthesize scanner entries or Python
+generators. Reports retain the full document up to 16 MiB; over-limit reports
+fail explicitly while retaining state. Finalized state stays readable and
+repeat finalization returns the same report.
+
 Use this skill for the “adapters + AI triage” branch selected from the unified
 workflow. Follow `system-scan` through bootstrap, toolchain validation, plan,
 preview, and per-adapter consent first. Ask separately whether redacted findings
@@ -15,7 +25,9 @@ Ask separately whether the selected AI is trusted to receive expanded
 non-secret diagnostics (`trustedAi`). Pass that flag only when approved.
 
 After the evidence is complete, call `system_ai_triage_payload` in batches of
-40 using `findingOffset` when needed. Record each batch with
+40 using reportDirectory, runId and `findingOffset`; omit findings so the server
+reads its saved evidence. Use system_read_run for scanner diagnostics. Never
+generate Python or parse chat logs to recover findings. Record each batch with
 `host_ai_triage` and the same offset; the server merges batches and rejects
 missing indexes at finalization. The model must classify every finding as
 `true_positive`, `false_positive`, or `needs_review`, cite only the provided

@@ -59,6 +59,100 @@ class SystemMcpTests(unittest.TestCase):
                 self.assertEqual(system_mcp.wait_for_job(Path(self.root), '123', 10)['resultStatus'], 'running')
             self.assertEqual(poll.call_count, 2)
 
+    def test_clamav_timeout_is_inside_sudo(self) -> None:
+        with patch.object(system_mcp, 'trusted_executable', side_effect=lambda name: '/usr/bin/' + name):
+            spec, argv = system_mcp.command('clamav', {'timeoutSeconds': 120})
+            self.assertEqual(argv[:7], ['/usr/bin/sudo', '-n', '/usr/bin/timeout', '--signal=TERM', '--kill-after=5s', '120s', '/usr/bin/clamscan'])
+            self.assertEqual(spec['timeout'], 135)
+            for bad in (True, 0, 3601, '120'):
+                with self.assertRaises(ValueError):
+                    system_mcp.command('clamav', {'timeoutSeconds': bad})
+
+    def test_partial_output_survives_size_limit(self) -> None:
+        path = Path(self.root) / 'output.log'
+        path.write_text('evidence\n' + 'x' * system_mcp.MAX_OUTPUT)
+        result = system_mcp.read_job_output(path)
+        self.assertTrue(result.startswith('evidence'))
+        self.assertTrue(result.endswith('[output truncated]'))
+
+    def test_negative_scanner_lines_are_not_findings(self) -> None:
+        findings, _ = system_mcp.normalize_output('chkrootkit', "Checking ls... not infected\nChecking ps... INFECTED")
+        self.assertEqual(len(findings), 1)
+        self.assertIn('ps', findings[0]['title'])
+        self.assertEqual(system_mcp.normalize_output('journal-warnings', '-- No entries --')[0], [])
+
+    def seed_result(self, run_id, result):
+        run = system_mcp.started_run(Path(self.root), run_id)
+        stored, _ = system_mcp.store_scanner(run, result)
+        run['executions'][stored['resultId']] = {'result': result}
+        system_mcp.save_run(Path(self.root), run_id, run)
+        return [f['findingId'] for f in stored['findings']]
+
+    def test_adapter_exit_codes(self) -> None:
+        for adapter, code, expected in [('debsums', 2, 'complete'), ('aide', 7, 'complete'), ('aide', 17, 'failed'), ('clamav', 2, 'failed')]:
+            result = system_mcp.completed_result({'adapter': adapter}, {}, adapter, code, '/etc/changed\nChanged files: 1\n', 'diagnostic')
+            self.assertEqual(result['resultStatus'], expected)
+
+    def test_lifecycle_ai_batch_and_diagnostic_read(self) -> None:
+        started = payload(system_mcp.call('system_start_run', {'reportDirectory': self.root, 'mode': 'scan-ai', 'consent': {'aiTriage': True}}))
+        args = {'reportDirectory': self.root, 'runId': started['runId']}
+        entry = {'adapter': 'debsums', 'command': {'argv': ['debsums']}, 'exitCode': 2, 'resultStatus': 'complete', 'stderrSnippet': 'diagnostic', 'findings': [{'title': str(i)} for i in range(45)]}
+        self.seed_result(started['runId'], entry)
+        batch = payload(system_mcp.call('system_ai_triage_payload', {**args, 'findingOffset': 40}))
+        self.assertEqual(len(batch['findings']), 5)
+        self.assertEqual(batch['findings'][0]['title'], '40')
+        read = payload(system_mcp.call('system_read_run', args))
+        self.assertEqual(read['scannerResults'][0]['stderrSnippet'], 'diagnostic')
+        self.assertTrue(system_mcp.call('system_ai_triage_payload', {**args, 'trustedAi': True})['isError'])
+
+    def test_evidence_ids_survive_reordering_and_reject_unknown_ids(self) -> None:
+        run = {'startedAt': 'test', 'scannerResults': [], 'consent': {'aiTriage': True}}
+        result = {'adapter': 'debsums', 'command': {'argv': ['debsums']}, 'exitCode': 2, 'resultStatus': 'complete', 'findings': [{'title': '/one'}, {'title': '/two'}]}
+        stored, duplicate = system_mcp.store_scanner(run, result)
+        self.assertFalse(duplicate)
+        ids = [f['findingId'] for f in stored['findings']]
+        notes = [{'findingId': i, 'classification': 'needs_review', 'confidence': 0.5, 'note': i} for i in reversed(ids)]
+        normalized = system_mcp.normalize_assessment(run, 'host_ai_triage', {'findingNotes': notes})
+        self.assertEqual([n['findingIndex'] for n in normalized['findingNotes']], [1, 0])
+        notes[0]['findingId'] = 'unknown'
+        with self.assertRaises(ValueError):
+            system_mcp.normalize_assessment(run, 'host_ai_triage', {'findingNotes': notes})
+        self.assertTrue(system_mcp.store_scanner(run, result)[1])
+
+    def test_finalize_collects_results_and_retains_readable_state(self) -> None:
+        started = payload(system_mcp.call('system_start_run', {'reportDirectory': self.root, 'mode': 'scan', 'consent': {}}))
+        args = {'reportDirectory': self.root, 'runId': started['runId']}
+        run = system_mcp.started_run(Path(self.root), started['runId'])
+        result = {'adapter': 'journal-warnings', 'command': {'argv': ['journalctl']}, 'exitCode': 0, 'resultStatus': 'complete', 'findings': []}
+        run['executions']['test'] = {'result': result}
+        system_mcp.save_run(Path(self.root), started['runId'], run)
+        final = payload(system_mcp.call('system_finalize_run', args))
+        self.assertTrue(final['finalized'])
+        read = payload(system_mcp.call('system_read_run', args))
+        self.assertEqual(read['scannerCount'], 1)
+        self.assertEqual(payload(system_mcp.call('system_finalize_run', args))['path'], final['path'])
+
+    def test_finalize_blocks_running_jobs(self) -> None:
+        started = payload(system_mcp.call('system_start_run', {'reportDirectory': self.root, 'mode': 'scan', 'consent': {}}))
+        run = system_mcp.started_run(Path(self.root), started['runId'])
+        run['executions']['job'] = {'jobId': '123'}
+        system_mcp.save_run(Path(self.root), started['runId'], run)
+        with patch.object(system_mcp, 'poll_job', return_value={'resultStatus': 'running'}):
+            result = system_mcp.call('system_finalize_run', {'reportDirectory': self.root, 'runId': started['runId']})
+        self.assertTrue(result['isError'])
+        self.assertIn('123', payload(result)['error'])
+        self.assertTrue(Path(started['statePath']).exists())
+
+    def test_report_larger_than_old_limit_preserves_tail(self) -> None:
+        with patch.object(system_mcp, 'render_report', return_value='x' * (system_mcp.MAX_OUTPUT + 1) + '\nREVIEW END'):
+            result = system_mcp.write_report(Path(self.root), {})
+        self.assertFalse(result['truncated'])
+        self.assertTrue(Path(result['path']).read_text().endswith('REVIEW END'))
+
+    def test_nested_observations_are_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            system_mcp.normalize_entry('scanner', {'adapter': 'listeners', 'command': {'argv': ['ss']}, 'resultStatus': 'complete', 'exitCode': 0, 'observations': [['lost']]}, 0)
+
     def test_plan_is_non_executing(self) -> None:
         value = payload(system_mcp.call("system_plan", {"reportDirectory": self.root}))
         self.assertFalse(value["processStarted"])
@@ -157,7 +251,9 @@ class SystemMcpTests(unittest.TestCase):
         final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
         report = Path(final["path"])
         self.assertTrue(report.is_file())
-        self.assertIn("clamav", report.read_text(encoding="utf-8"))
+        document = report.read_text(encoding="utf-8")
+        self.assertIn("clamav", document)
+        self.assertIn(f"`{run_id}`", document)
 
     def test_lifecycle_refuses_symlinked_report_root(self) -> None:
         outside = Path(self.root) / "outside"
@@ -260,7 +356,8 @@ class SystemMcpTests(unittest.TestCase):
                 result = system_mcp.poll_job(Path(self.root), started["jobId"])
                 if result["resultStatus"] != "running": break
                 time.sleep(0.05)
-            self.assertEqual(result["resultStatus"], "failed")
+            self.assertEqual(result["resultStatus"], "incomplete")
+            self.assertTrue(result['timedOut'])
             job_dir = Path(self.root) / ".mnogovid" / "system-scanner" / started["jobId"]
             child_pid = int((job_dir / "stdout.log").read_text(encoding="utf-8").strip())
             with self.assertRaises(ProcessLookupError):
@@ -443,6 +540,12 @@ class SystemMcpTests(unittest.TestCase):
         self.assertIn("## Coverage gaps", document)
         self.assertIn("## Scan coverage", document)
         self.assertIn("## Report details", document)
+        self.assertIn("## Findings by severity", document)
+        self.assertIn("```mermaid", document)
+        self.assertIn("## Coverage by group", document)
+        self.assertIn("## Relationship graph", document)
+        self.assertIn("## Sources and manual verification", document)
+        self.assertNotIn("```json", document)
 
     def test_recommendation_is_distribution_aware(self) -> None:
         recommended = system_mcp.recommend_host({"packageManagers": ["apt-get"], "containerRuntimes": ["docker"]})
@@ -454,14 +557,29 @@ class SystemMcpTests(unittest.TestCase):
         started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan-ai", "consent": {"aiTriage": True}}))
         run_id = started["runId"]
         scanner = {"adapter": "listeners", "command": {"argv": ["ss", "-H", "-lntup"], "currentDir": self.root}, "resultStatus": "complete", "exitCode": 0, "findings": [{"severity": "high", "title": "unexpected listener", "location": "0.0.0.0:9000"}], "observations": []}
-        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "scanner", "entry": scanner})
+        ids = self.seed_result(run_id, scanner)
         triage = {"findingNotes": [{"findingIndex": 0, "classification": "needs_review", "confidence": 0.8, "note": "Verify service ownership."}]}
+        triage['findingNotes'][0]['findingId'] = ids[0]
         system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "host_ai_triage", "entry": triage})
         final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
         document = Path(final["path"]).read_text(encoding="utf-8")
         self.assertIn("unexpected listener", document)
         self.assertIn("0.0.0.0:9000", document)
         self.assertIn("Verify service ownership.", document)
+        self.assertIn("## AI conclusions summary", document)
+        self.assertIn("### Host AI triage (advisory)", document)
+        self.assertNotIn("```json", document)
+
+    def test_report_keeps_non_priority_findings_in_overview_only(self) -> None:
+        run = {
+            "startedAt": "test", "mode": "scan", "scopeGroups": ["host"], "consent": {},
+            "scannerResults": [{"adapter": "journal-warnings", "category": "logs", "resultStatus": "complete", "command": {"argv": ["journalctl"]}, "findings": [{"adapter": "journal-warnings", "severity": "low", "title": "routine warning"}], "observations": []}],
+            "skippedScanners": [], "hostAiTriage": None, "agentReview": None,
+        }
+        document = system_mcp.render_report(Path(self.root), run, "report")
+        self.assertIn("routine warning", document)
+        self.assertIn("## Findings overview", document)
+        self.assertNotIn("### 1. routine warning", document)
 
     def test_lifecycle_and_preview_retries_are_idempotent(self) -> None:
         consent = {"rootPrivileges": False}
@@ -491,15 +609,17 @@ class SystemMcpTests(unittest.TestCase):
         started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan-ai", "consent": {"aiTriage": True}}))
         run_id = started["runId"]
         scanner = {"adapter": "listeners", "command": {"argv": ["ss", "-H", "-lntup"], "currentDir": self.root}, "resultStatus": "complete", "exitCode": 0, "findings": [{"severity": "high", "title": "one"}, {"severity": "medium", "title": "two"}], "observations": []}
-        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "scanner", "entry": scanner})
+        ids = self.seed_result(run_id, scanner)
         first = {"findingOffset": 0, "findingNotes": [{"findingIndex": 0, "classification": "needs_review", "confidence": "medium", "note": "check one"}]}
         second = {"findingOffset": 1, "findingNotes": [{"findingIndex": 0, "classification": "false_positive", "confidence": "high", "note": "check two"}]}
+        first['findingNotes'][0]['findingId'] = ids[0]
+        second['findingNotes'][0]['findingId'] = ids[1]
         system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "host_ai_triage", "entry": first})
         system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "host_ai_triage", "entry": second})
         final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
         document = Path(final["path"]).read_text(encoding="utf-8")
         self.assertIn("check one", document)
-        self.assertIn("check two", document)
+        self.assertNotIn("check two", document)
 
     def test_remote_finalize_is_mirrored_to_local_directory(self) -> None:
         response = {"result": {"isError": False, "content": [{"type": "text", "text": json.dumps({"reportId": "123", "path": "/remote/result.md", "reportText": "# remote report\n"})}]}}

@@ -5,6 +5,16 @@ description: Plan, approve, execute, and report an evidence-first Linux host sec
 
 # Linux system scan
 
+Scanner evidence is saved server-side. Synchronous system_run results are
+recorded automatically; system_record_job records completed background jobs.
+Before triage/finalization the server collects pending results and refuses to
+continue while jobs are running. Use system_read_run to inspect saved results.
+Return findingId unchanged in every AI/reviewer note; numeric indexes alone
+are insufficient for new evidence. Never synthesize scanner entries or Python
+generators. Reports retain the full document up to 16 MiB; over-limit reports
+fail explicitly while retaining state. Finalized state stays readable and
+repeat finalization returns the same report.
+
 Use this skill for the adapters-only branch of the unified System Scanner
 workflow. Bootstrap the selected local or remote target first, then assess
 installed tools, malware/rootkits, integrity, packages, persistence, listeners,
@@ -59,11 +69,20 @@ redacted report and the bridge stores it under that local directory; the
 remote runner retains its private working copy only for resumability.
 
 When host-AI triage has more than 40 findings, call
-`system_ai_triage_payload` with the full finding list and offsets 0, 40, 80,
+`system_ai_triage_payload` with reportDirectory, runId and offsets 0, 40, 80,
 and so on. Record each batch with the matching `findingOffset`; duplicate
 previews, scanner results, and batches are idempotent.
+Omit findings in lifecycle mode. Read individual saved scanner results with
+system_read_run; never generate Python to parse transcripts or state files.
 
 ## Boundaries
+
+Before ClamAV, select the total runtime budget (1–60 minutes, default 60).
+Use the same timeoutSeconds in preview and execution. The approved command
+runs trusted GNU timeout under sudo: TERM at the deadline, KILL after 5 seconds.
+Sudo policy must permit that wrapper. Record timeout results as incomplete;
+partial findings are retained. Silence with --infected --no-summary is normal,
+and an AI stream interruption does not mean the scanner must be killed.
 
 Polling uses bounded server-side waiting: waitSeconds defaults to 5, accepts
 0..10, and returns early on completion. Repeat system_record_job with the same
