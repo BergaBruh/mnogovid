@@ -184,6 +184,37 @@ class SystemMcpTests(unittest.TestCase):
         repeated = payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root}))
         self.assertEqual(repeated["profile"]["action"], "verified")
 
+    def test_demo_flag_is_persisted_at_first_bootstrap_without_disabling_workflows(self) -> None:
+        first = payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root, "flag": "demo"}))
+        self.assertEqual(first["profile"]["action"], "missing")
+        created = payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root, "createProfile": True, "flag": "demo"}))
+        self.assertEqual(created["flag"], "demo")
+        saved = json.loads((Path(self.root) / ".mnogovid-system-scanner.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["flag"], "demo")
+
+        ai_run = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan-ai", "consent": {"aiTriage": True}}))
+        self.assertEqual(ai_run["flag"], "demo")
+        payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": ai_run["runId"]}))
+        agent_run = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan-agent", "consent": {"agentReview": True}}))
+        self.assertEqual(agent_run["flag"], "demo")
+        ids = self.seed_result(agent_run["runId"], {"adapter": "listeners", "command": {"argv": ["ss"]}, "exitCode": 0, "resultStatus": "complete", "findings": [{"title": "reviewable"}]})
+        review = system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": agent_run["runId"], "kind": "agent_review", "entry": {"findingNotes": [{"findingId": ids[0], "classification": "needs_review", "confidence": 0.5, "note": "reviewed"}]}})
+        self.assertFalse(review["isError"])
+
+        report = Path(self.root) / "report.json"
+        report.write_text("[]", encoding="utf-8")
+        ingested = payload(system_mcp.call("system_ingest", {"reportDirectory": self.root, "report": str(report), "format": "json"}))
+        self.assertTrue(ingested["reportOnly"])
+        advisory = system_mcp.call("system_advisory_lookup", {"ecosystem": "Debian", "package": "openssl", "version": "1.0", "allowNetwork": False})
+        self.assertTrue(advisory["isError"])
+        self.assertIn("allowNetwork", payload(advisory)["error"])
+
+    def test_demo_flag_cannot_retrofit_standard_profile(self) -> None:
+        payload(system_mcp.call("system_bootstrap", {"reportDirectory": self.root, "createProfile": True}))
+        result = system_mcp.call("system_bootstrap", {"reportDirectory": self.root, "flag": "demo"})
+        self.assertTrue(result["isError"])
+        self.assertIn("first profile creation", payload(result)["error"])
+
     @patch.object(system_mcp, "trusted_executable", side_effect=lambda name: "/usr/bin/" + name)
     def test_virtual_listener_preview_never_starts_process(self, trusted) -> None:
         value = payload(system_mcp.call("system_virtual_run", {"reportDirectory": self.root, "adapter": "listeners"}))
@@ -372,6 +403,13 @@ class SystemMcpTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("symlinked profile", completed.stderr)
 
+    def test_init_accepts_demo_flag(self) -> None:
+        completed = subprocess.run([sys.executable, str(INIT_PATH), self.root, "--write", "--flag=demo", "--json"], capture_output=True, text=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["profile"]["action"], "created")
+        self.assertEqual(json.loads((Path(self.root) / ".mnogovid-system-scanner.json").read_text(encoding="utf-8"))["flag"], "demo")
+
     def test_ingest_normalizes_sarif_without_starting_a_process(self) -> None:
         report = Path(self.root) / "report.sarif"
         report.write_text(json.dumps({"runs": [{"results": [{"ruleId": "CVE-2026-0001", "level": "error", "message": {"text": "vulnerable package"}, "locations": [{"physicalLocation": {"artifactLocation": {"uri": "/usr/bin/example"}, "region": {"startLine": 3}}}]}]}]}), encoding="utf-8")
@@ -520,7 +558,9 @@ class SystemMcpTests(unittest.TestCase):
     def test_unified_command_uses_chat_consent_and_mode_selection(self) -> None:
         root = Path(__file__).resolve().parents[1]
         command = (root / "commands" / "system-scan.md").read_text(encoding="utf-8")
-        self.assertNotIn("argument-hint:", command)
+        self.assertIn('argument-hint: "[--flag=demo]"', command)
+        self.assertIn("flag: \"demo\"", command)
+        self.assertNotIn("server rejects", command)
         self.assertIn("May I connect read-only", command)
         self.assertIn("Never read `~/.ssh/config` to discover or list", command)
         self.assertIn("Do not require command arguments", command)

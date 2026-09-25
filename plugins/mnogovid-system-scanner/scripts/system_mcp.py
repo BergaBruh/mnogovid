@@ -36,10 +36,11 @@ RUNS: dict[str, dict[str, Any]] = {}
 JOBS: dict[str, dict[str, Any]] = {}
 REMOTE_DEPLOYMENTS: dict[str, dict[str, Any]] = {}
 PROFILE_NAME = ".mnogovid-system-scanner.json"
+DEMO_FLAG = "demo"
 REMOTE_RUNNER_DIR = "~/.local/share/mnogovid-system-scanner"
 REMOTE_RUNNER_SCRIPT = REMOTE_RUNNER_DIR + "/system_mcp.py"
 REMOTE_RUNNER_VERSION = REMOTE_RUNNER_DIR + "/version"
-REMOTE_RUNNER_RELEASE = "2.1.9"
+REMOTE_RUNNER_RELEASE = "2.1.10"
 REMOTE_TIMEOUT = 3600
 TRUSTED_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/local/sbin", "/usr/local/bin")
 SCAN_GROUPS = {
@@ -169,7 +170,7 @@ def _image_args(subcommand: str, prefix: list[str], args: dict[str, Any]) -> lis
 TOOLS = [
     {"name": "system_catalog", "description": "List allowlisted Linux host security, exposure, and traffic-observation adapters.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}},
     {"name": "system_doctor", "description": "Read local OS identity and check allowlisted executable availability. It does not execute a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}}, "required": ["reportDirectory"], "additionalProperties": False}},
-    {"name": "system_bootstrap", "description": "Check the system-scanner profile and local toolchain before a scan. Set createProfile=true only after explicit user approval to create a missing profile; it does not run a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "createProfile": {"type": "boolean"}}, "required": ["reportDirectory"], "additionalProperties": False}},
+    {"name": "system_bootstrap", "description": "Check the system-scanner profile and local toolchain before a scan. Set createProfile=true only after explicit user approval to create a missing profile; flag=demo may be set only during that first profile creation. It does not run a scanner.", "inputSchema": {"type": "object", "properties": {"reportDirectory": {"type": "string"}, "createProfile": {"type": "boolean"}, "flag": {"enum": ["demo"]}}, "required": ["reportDirectory"], "additionalProperties": False}},
     {"name": "system_remote_prepare", "description": "Read-only probe of one SSH alias or explicit user@host target. It requires approveConnection=true after the user explicitly authorizes the connection; only then may it inspect ~/.ssh/config or run SSH. identityFile is an optional local private-key path; the key contents are never read.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "identityFile": {"type": "string"}, "approveConnection": {"type": "boolean"}}, "required": ["sshAlias", "approveConnection"], "additionalProperties": False}},
     {"name": "system_remote_authorize_deploy", "description": "Create a short-lived, one-time deployment ticket after the user explicitly approves deploying or updating the runner on the named SSH host. It does not write remotely. identityFile is an optional local private-key path; the key contents are never read.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "identityFile": {"type": "string"}, "approveDeployment": {"type": "boolean"}}, "required": ["sshAlias", "approveDeployment"], "additionalProperties": False}},
     {"name": "system_remote_deploy_runner", "description": "Deploy or update the fixed remote runner under the remote user's ~/.local/share only with a valid one-time deployment ticket. It does not scan the host.", "inputSchema": {"type": "object", "properties": {"sshAlias": {"type": "string"}, "deploymentId": {"type": "string"}}, "required": ["sshAlias", "deploymentId"], "additionalProperties": False}},
@@ -395,6 +396,33 @@ def installation_guide(found: dict[str, Any], runs: list[dict[str, Any]]) -> dic
     return {"packageManagers":[{"name":name,"commandTemplate":PACKAGE_MANAGER_TEMPLATES[name]} for name in managers],"missingAdapters":missing,"note":"Candidate package names vary by distribution release; verify the package name before installing. The scanner never installs utilities itself."}
 
 
+def normalize_flag(value: Any) -> str | None:
+    if value is None:
+        return None
+    if value != DEMO_FLAG:
+        raise ValueError("flag must be demo when supplied")
+    return DEMO_FLAG
+
+
+def profile_flag(root: Path) -> str | None:
+    """Read the immutable initialization flag without granting new permissions."""
+    profile_path = root / PROFILE_NAME
+    if not profile_path.exists() and not profile_path.is_symlink():
+        return None
+    info = os.lstat(profile_path)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("refusing non-regular or symlinked system-scanner profile")
+    if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise ValueError("system-scanner profile must be private and owned by this user")
+    try:
+        saved = json.loads(read_regular_file(profile_path, MAX_OUTPUT))
+    except json.JSONDecodeError as exc:
+        raise ValueError("system-scanner profile is not valid JSON") from exc
+    if not isinstance(saved, dict):
+        raise ValueError("system-scanner profile must be a JSON object")
+    return normalize_flag(saved.get("flag"))
+
+
 def plan(_: Path) -> dict[str, Any]:
     found = discover_host()
     runs = []
@@ -405,9 +433,10 @@ def plan(_: Path) -> dict[str, Any]:
     return {"host": found, "recommendedAdapters": recommend_host(found), "runs": runs, "groups": scope_summary(runs, found), "installationGuide":installation_guide(found,runs), "processStarted": False, "networkUsed": False, "trafficCaptured": False}
 
 
-def bootstrap(root: Path, create_profile: bool) -> dict[str, Any]:
+def bootstrap(root: Path, create_profile: bool, requested_flag: Any = None) -> dict[str, Any]:
     if not isinstance(create_profile, bool):
         raise ValueError("createProfile must be boolean when supplied")
+    requested_flag = normalize_flag(requested_flag)
     profile_path = root / PROFILE_NAME
     profile: dict[str, Any]
     if profile_path.exists() or profile_path.is_symlink():
@@ -420,17 +449,20 @@ def bootstrap(root: Path, create_profile: bool) -> dict[str, Any]:
             saved = json.loads(read_regular_file(profile_path, MAX_OUTPUT))
         except json.JSONDecodeError:
             saved = None
+        saved_flag = normalize_flag(saved.get("flag")) if isinstance(saved, dict) else None
         valid = isinstance(saved, dict) and saved.get("schemaVersion") == 1 and saved.get("generatedBy") in {"mnogovid-system-scanner bootstrap", "mnogovid-system-scanner init"}
-        profile = {"path": str(profile_path), "action": "verified" if valid else "invalid", "valid": valid}
+        if valid and requested_flag is not None and saved_flag != requested_flag:
+            raise ValueError("demo can only be enabled during first profile creation; the existing profile is already initialized")
+        profile = {"path": str(profile_path), "action": "verified" if valid else "invalid", "valid": valid, "flag": saved_flag if valid else None}
     elif create_profile:
         discovered = plan(root)
-        saved = {"schemaVersion": 1, "generatedBy": "mnogovid-system-scanner bootstrap", "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "recommendedAdapters": discovered["recommendedAdapters"], "availableAdapters": [item["adapter"] for item in discovered["runs"] if item["available"]], "notes": ["This profile records discovery only and grants no scanner permission.", "Every scanner still requires an explicit lifecycle preview and approval."]}
+        saved = {"schemaVersion": 1, "generatedBy": "mnogovid-system-scanner bootstrap", "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "flag": requested_flag, "recommendedAdapters": discovered["recommendedAdapters"], "availableAdapters": [item["adapter"] for item in discovered["runs"] if item["available"]], "notes": ["This profile records discovery only and grants no scanner permission.", "Every scanner still requires an explicit lifecycle preview and approval."]}
         atomic_write(profile_path, json.dumps(saved, ensure_ascii=False, indent=2) + "\n", replace=False)
-        profile = {"path": str(profile_path), "action": "created", "valid": True}
+        profile = {"path": str(profile_path), "action": "created", "valid": True, "flag": requested_flag}
     else:
-        profile = {"path": str(profile_path), "action": "missing", "valid": False}
+        profile = {"path": str(profile_path), "action": "missing", "valid": False, "flag": requested_flag}
     discovered = plan(root)
-    return {"profile": profile, "doctor": {**discovered, "missingExecutables": [item["executable"] for item in discovered["runs"] if not item["available"]]}, "processStarted": False}
+    return {"profile": profile, "flag": profile.get("flag"), "doctor": {**discovered, "missingExecutables": [item["executable"] for item in discovered["runs"] if not item["available"]]}, "processStarted": False}
 
 
 def redact(value: Any) -> Any:
@@ -1581,7 +1613,7 @@ def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
             return content(data)
         if name == "system_bootstrap":
             root = report_directory(args.get("reportDirectory"))
-            return content(bootstrap(root, args.get("createProfile", False)))
+            return content(bootstrap(root, args.get("createProfile", False), args.get("flag")))
         if name == "system_virtual_run":
             root = report_directory(args.get("reportDirectory"))
             return content(run_one(root, args, True))
@@ -1643,18 +1675,21 @@ def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
             root = report_directory(args.get("reportDirectory")); mode = args.get("mode"); consent = args.get("consent")
             if mode not in ("scan", "scan-ai", "scan-agent"):
                 raise ValueError("mode and consent are required")
+            flag = profile_flag(root)
             consent = normalize_consent(consent)
             scope_groups = normalize_scope(args.get("scopeGroups"))
             lock = acquire_lifecycle_lock(root)
             try:
                 existing = existing_lifecycle(root, mode, consent, scope_groups)
                 if existing:
-                    run_id, _ = existing
-                    return content({"runId": run_id, "statePath": str(state_path(root, run_id)), "scopeGroups": scope_groups, "processStarted": False, "reportWritten": False, "resumed": True})
+                    run_id, existing_run = existing
+                    if existing_run.get("flag") != flag:
+                        raise ValueError("unfinished lifecycle was created with a different initialization flag; use a new report directory")
+                    return content({"runId": run_id, "statePath": str(state_path(root, run_id)), "scopeGroups": scope_groups, "flag": flag, "processStarted": False, "reportWritten": False, "resumed": True})
                 run_id = str(time.time_ns())
-                run = {"reportDirectory": str(root), "mode": mode, "scopeGroups": scope_groups, "consent": consent, "startedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "scannerResults": [], "virtualCommands": [], "skippedScanners": [], "executions": {}, "hostAiTriage": None, "agentReview": None}
+                run = {"reportDirectory": str(root), "mode": mode, "flag": flag, "scopeGroups": scope_groups, "consent": consent, "startedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(), "scannerResults": [], "virtualCommands": [], "skippedScanners": [], "executions": {}, "hostAiTriage": None, "agentReview": None}
                 RUNS[run_id] = run; save_run(root, run_id, run)
-                return content({"runId": run_id, "statePath": str(state_path(root, run_id)), "scopeGroups": scope_groups, "processStarted": False, "reportWritten": False})
+                return content({"runId": run_id, "statePath": str(state_path(root, run_id)), "scopeGroups": scope_groups, "flag": flag, "processStarted": False, "reportWritten": False})
             finally:
                 lock.unlink(missing_ok=True)
         if name == "system_record_run":

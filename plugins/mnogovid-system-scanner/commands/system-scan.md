@@ -1,8 +1,20 @@
 ---
 description: Choose and run a consent-gated local or remote Linux security assessment
+argument-hint: "[--flag=demo]"
 ---
 
-Run one unified system-scanner workflow. Do not require command arguments.
+Run one unified system-scanner workflow. The optional invocation flag is
+`--flag=demo`. Do not require command arguments.
+
+When the exact `--flag=demo` argument is present, this is a demo initialization:
+pass `flag: "demo"` to the first `system_bootstrap` call and, if the profile is
+missing, to the approved profile-creation call as well. The server persists the
+flag in the profile and validates it. It can only be enabled while the profile is
+created; an already initialized standard profile must not be silently changed.
+Demo mode retains the complete scanner workflow: local and remote scans,
+normal system/network tool calls, all three analysis modes, report ingestion,
+advisory lookup, and independent review. Remote runner preparation and
+deployment remain available because they are required to perform a remote scan.
 
 Scanner evidence is saved server-side. Synchronous system_run results are
 recorded automatically; system_record_job records completed background jobs.
@@ -38,10 +50,12 @@ Before scanner-mode selection, complete bootstrap for the selected target.
    its ticket with `system_remote_deploy_runner`. Remote tool calls must use
    `system_remote_call` with that alias; local tool calls must use `system_*`
    directly. Never mix the two in one lifecycle.
-2. **Bootstrap:** Call `system_bootstrap` with `createProfile=false`. If its
+2. **Bootstrap:** Call `system_bootstrap` with `createProfile=false` (and
+   `flag: "demo"` when the command was invoked with `--flag=demo`). If its
    profile action is `missing`, ask: “Create the missing system-scanner profile
    in this directory? This records discovery only; it does not start a scan.”
-   Call it again with `createProfile=true` only after yes. If the profile is
+   Call it again with `createProfile=true` (preserving `flag: "demo"` when
+   requested) only after yes. If the profile is
    invalid, stop and report that it must be repaired explicitly. Show a separate
    utility-readiness message: available adapters, missing adapters, detected
    package managers, candidate package names, and install command templates.
@@ -69,8 +83,8 @@ Before scanner-mode selection, complete bootstrap for the selected target.
    - **Adapters + AI triage + independent review** — adds a separately approved
      `system-triage` assessment after host-AI triage.
 
-Map the mode to `system_start_run`: `scan`, `scan-ai`, or `scan-agent`, and pass
-the selected `scopeGroups`.
+Map the selected mode to `system_start_run`: `scan`, `scan-ai`, or `scan-agent`,
+and pass the selected `scopeGroups`.
 Use only the chosen target's tools; never mix local and remote tool results in
 one lifecycle.
 

@@ -105,6 +105,22 @@ state is kept privately on the remote host while the finalized redacted
 `result.md` is copied into the local `.mnogovid/system-scanner/<timestamp>/`
 directory and returned with `storedLocally: true`.
 
+### Demo initialization
+
+For a restricted demonstration workflow, invoke the unified command with the
+single optional flag:
+
+```text
+/mnogovid-system-scanner:system-scan --flag=demo
+```
+
+The flag is accepted only during first profile creation and is persisted in
+`.mnogovid-system-scanner.json`. Demo mode retains local and remote scans,
+normal system/network scanner tool calls, all analysis modes, report ingestion,
+OSV advisory lookups, and independent review. Remote runner
+preparation/deployment remains available because it is part of a remote scan.
+An existing standard profile is not silently converted to demo mode.
+
 ### Claude Code
 
 Install the plugin from the configured marketplace, start Claude in the
@@ -149,6 +165,12 @@ first. A profile records discovery only and never grants scanner permission:
 
 ```bash
 python3 /path/to/mnogovid-system-scanner/scripts/init.py /safe/report-directory --json --write
+```
+
+The equivalent manual demo initialization is:
+
+```bash
+python3 /path/to/mnogovid-system-scanner/scripts/init.py /safe/report-directory --json --write --flag=demo
 ```
 
 For every adapter the agent previews its exact argv and asks for approval. Two

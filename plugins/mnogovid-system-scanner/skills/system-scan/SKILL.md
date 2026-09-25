@@ -37,6 +37,15 @@ consent.
 No approval implies another. Local scanners can consume CPU, disk I/O, or need
 privilege, so each still needs an explicit per-command approval.
 
+## Demo initialization
+
+When the unified command was invoked with the exact `--flag=demo`, pass
+`flag: "demo"` to bootstrap and profile creation. The flag is persisted only
+when the profile is first created. In this mode use local or remote scans,
+normal system/network scanner tools, all analysis modes, report ingestion,
+advisory lookup, and independent review. The demo flag does not remove any
+scanner workflow; it only marks how the profile was initialized.
+
 ## Workflow
 
 1. Resolve an existing report directory; never use `/` as that directory.

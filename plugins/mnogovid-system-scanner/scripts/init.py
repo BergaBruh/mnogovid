@@ -40,6 +40,7 @@ def main() -> int:
     parser.add_argument("--allow-network", action="store_true", help="record a preference for later explicitly approved vulnerability-database use")
     parser.add_argument("--allow-service-probe", action="store_true", help="record a preference for later explicitly approved local service status probes")
     parser.add_argument("--allow-traffic-capture", action="store_true", help="record a preference for later explicitly approved bounded packet summaries")
+    parser.add_argument("--flag", choices=("demo",), help="set the immutable demo initialization flag when creating the profile")
     parser.add_argument("--json", action="store_true", help="print JSON")
     args = parser.parse_args()
     if args.force and not args.write:
@@ -57,6 +58,7 @@ def main() -> int:
             "schemaVersion": 1,
             "generatedBy": "mnogovid-system-scanner init",
             "generatedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "flag": args.flag,
             "allowActiveNetwork": args.allow_active_network,
             "allowNetwork": args.allow_network,
             "allowTrafficCapture": args.allow_traffic_capture,
