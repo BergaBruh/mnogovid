@@ -105,6 +105,17 @@ class SystemMcpTests(unittest.TestCase):
         self.assertEqual(read['scannerResults'][0]['stderrSnippet'], 'diagnostic')
         self.assertTrue(system_mcp.call('system_ai_triage_payload', {**args, 'trustedAi': True})['isError'])
 
+    def test_record_preview_rejects_unselected_scan_group(self) -> None:
+        started = payload(system_mcp.call('system_start_run', {'reportDirectory': self.root, 'mode': 'scan', 'scopeGroups': ['host'], 'consent': {}}))
+        result = system_mcp.call('system_record_run', {
+            'reportDirectory': self.root,
+            'runId': started['runId'],
+            'kind': 'preview',
+            'entry': {'adapter': 'listeners', 'command': {'argv': ['ss']}, 'requiresRoot': True},
+        })
+        self.assertTrue(result['isError'])
+        self.assertIn("scan group 'network' was not selected", payload(result)['error'])
+
     def test_evidence_ids_survive_reordering_and_reject_unknown_ids(self) -> None:
         run = {'startedAt': 'test', 'scannerResults': [], 'consent': {'aiTriage': True}}
         result = {'adapter': 'debsums', 'command': {'argv': ['debsums']}, 'exitCode': 2, 'resultStatus': 'complete', 'findings': [{'title': '/one'}, {'title': '/two'}]}
@@ -610,6 +621,34 @@ class SystemMcpTests(unittest.TestCase):
         self.assertIn("### Host AI triage (advisory)", document)
         self.assertNotIn("```json", document)
 
+    def test_coverage_statuses_and_partial_pass_phrase(self) -> None:
+        run = {
+            "startedAt": "test", "mode": "scan", "scopeGroups": ["host", "malware"], "consent": {},
+            "scannerResults": [{"adapter": "journal-warnings", "category": "logs", "resultStatus": "complete", "command": {"argv": ["journalctl"]}, "findings": [], "observations": []}],
+            "skippedScanners": [], "hostAiTriage": None, "agentReview": None,
+        }
+        cov = system_mcp.coverage_summary(run)
+        self.assertEqual(cov["groups"]["host"], "covered")
+        self.assertEqual(cov["groups"]["malware"], "not_run")
+        self.assertEqual(cov["groups"]["network"], "not_selected")
+        self.assertTrue(cov["partial"])
+        run["scannerResults"].append({"adapter": "clamav", "category": "malware", "resultStatus": "failed", "command": {"argv": ["clamscan"]}, "findings": [], "observations": []})
+        self.assertEqual(system_mcp.coverage_summary(run)["groups"]["malware"], "partial")
+        document = system_mcp.render_report(Path(self.root), run, "report")
+        self.assertIn("## Coverage statement", document)
+        self.assertIn("**This is a partial pass.**", document)
+
+    def test_report_renders_verdict_and_severity_line(self) -> None:
+        started = payload(system_mcp.call("system_start_run", {"reportDirectory": self.root, "mode": "scan-ai", "consent": {"aiTriage": True}}))
+        run_id = started["runId"]
+        scanner = {"adapter": "listeners", "command": {"argv": ["ss"], "currentDir": self.root}, "resultStatus": "complete", "exitCode": 0, "findings": [{"severity": "high", "title": "open listener", "location": "0.0.0.0:9000"}], "observations": []}
+        ids = self.seed_result(run_id, scanner)
+        triage = {"findingNotes": [{"findingIndex": 0, "findingId": ids[0], "verdict": "confirmed", "severity": "high", "evidenceQuote": "0.0.0.0:9000", "confidence": 0.9, "note": "Listener is public."}]}
+        system_mcp.call("system_record_run", {"reportDirectory": self.root, "runId": run_id, "kind": "host_ai_triage", "entry": triage})
+        final = payload(system_mcp.call("system_finalize_run", {"reportDirectory": self.root, "runId": run_id}))
+        document = Path(final["path"]).read_text(encoding="utf-8")
+        self.assertIn("verdict: confirmed, severity: high", document)
+
     def test_report_keeps_non_priority_findings_in_overview_only(self) -> None:
         run = {
             "startedAt": "test", "mode": "scan", "scopeGroups": ["host"], "consent": {},
@@ -674,6 +713,67 @@ class SystemMcpTests(unittest.TestCase):
         trusted = payload(system_mcp.call("system_ai_triage_payload", {"findings": [{"title": "path"}], "trustedAi": True}))
         self.assertEqual(strict["privacyMode"], "strict-redacted")
         self.assertEqual(trusted["privacyMode"], "trusted-ai")
+
+    def test_verdict_aliases_and_contract(self) -> None:
+        for raw, canon in (('true_positive', 'confirmed'), ('needs_review', 'needs_validation'), ('false_positive', 'rejected')):
+            self.assertEqual(system_mcp.normalize_verdict({'classification': raw}), canon)
+        with self.assertRaises(ValueError):
+            system_mcp.verdict_fields({'verdict': 'confirmed'}, 'confirmed')
+        with self.assertRaises(ValueError):
+            system_mcp.verdict_fields({'verdict': 'needs_validation', 'blocker': 'x'}, 'needs_validation')
+        with self.assertRaises(ValueError):
+            system_mcp.verdict_fields({'verdict': 'rejected'}, 'rejected')
+        with self.assertRaises(ValueError):
+            system_mcp.verdict_fields({'verdict': 'rejected', 'reason': 'r', 'severity': 'low'}, 'rejected')
+        ok = system_mcp.verdict_fields({'verdict': 'confirmed', 'evidenceQuote': 'q', 'severity': 'high'}, 'confirmed')
+        self.assertEqual(ok['classification'], 'true_positive')
+
+    def test_fingerprint_stable_and_sensitive(self) -> None:
+        a = {'adapter': 'x', 'title': 'T', 'findingId': '1'}
+        self.assertEqual(system_mcp.finding_fingerprint(a), system_mcp.finding_fingerprint({**a, 'findingId': '2'}))
+        self.assertNotEqual(system_mcp.finding_fingerprint(a), system_mcp.finding_fingerprint({**a, 'title': 'U'}))
+
+    def test_secret_paths_scrubbed(self) -> None:
+        for text in ('/home/u/.ssh/id_rsa', '/root/.netrc', 'x /a/.npmrc y', '.pypirc', '.dockercfg', 'id_ed25519'):
+            self.assertNotIn('ssh', system_mcp.redact(text).replace('[REDACTED-PATH]', ''))
+            self.assertTrue(system_mcp.is_secret_path(text))
+        self.assertFalse(system_mcp.is_secret_path('/etc/sshd_config'))
+
+    def test_findings_json_coverage_and_prior(self) -> None:
+        started = payload(system_mcp.call('system_start_run', {'reportDirectory': self.root, 'mode': 'scan', 'consent': {}}))
+        rid = started['runId']
+        self.seed_result(rid, {'adapter': 'debsums', 'command': {'argv': ['debsums']}, 'exitCode': 2, 'resultStatus': 'complete', 'findings': [{'title': 'a'}]})
+        run = system_mcp.started_run(Path(self.root), rid)
+        doc = system_mcp.build_findings_document(run, '1')
+        self.assertEqual(doc['findings'][0]['verdict'], 'unassessed')
+        self.assertTrue(doc['coverage']['partial'])
+        self.assertIn('not_selected', set(doc['coverage']['groups'].values()) | {'not_selected'})
+        d = Path(self.root) / '.mnogovid' / 'system-scanner' / '1'
+        d.mkdir(parents=True)
+        fp = doc['findings'][0]['fingerprint']
+        (d / 'findings.json').write_text(json.dumps({'findings': [{'fingerprint': fp, 'verdict': 'rejected', 'reason': 'r'}]}))
+        out = payload(system_mcp.call('system_prior_runs', {'reportDirectory': self.root}))
+        self.assertEqual(out['prior'][fp]['verdict'], 'rejected')
+        self.assertIn('system_prior_runs', [t['name'] for t in system_mcp.TOOLS])
+
+    def test_reviewer_payload_has_no_host_verdict(self) -> None:
+        started = payload(system_mcp.call('system_start_run', {'reportDirectory': self.root, 'mode': 'scan-ai', 'consent': {'aiTriage': True}}))
+        rid = started['runId']
+        self.seed_result(rid, {'adapter': 'debsums', 'command': {'argv': ['debsums']}, 'exitCode': 2, 'resultStatus': 'complete', 'findings': [{'title': 'a'}]})
+        out = json.dumps(payload(system_mcp.call('system_ai_triage_payload', {'reportDirectory': self.root, 'runId': rid})))
+        for k in ('hostAiTriage', 'hostVerdict', '"verdict"'):
+            self.assertNotIn(k, out)
+
+
+    def test_prior_rejected_suppresses_only_identical_fingerprint(self) -> None:
+        run = {'scannerResults': [{'adapter': 'a', 'findings': [{'adapter': 'a', 'title': 'same'}, {'adapter': 'a', 'title': 'changed'}]}]}
+        fp = system_mcp.finding_fingerprint({'adapter': 'a', 'title': 'same'})
+        doc = system_mcp.build_findings_document(run, '2', {fp: {'verdict': 'rejected', 'reportId': '1'}})
+        by_title = {r['title']: r for r in doc['findings']}
+        self.assertTrue(by_title['same'].get('suppressedByPrior'))
+        self.assertNotIn('priorVerdict', by_title['changed'])
+        doc = system_mcp.build_findings_document(run, '2', {fp: {'verdict': 'needs_validation', 'reportId': '1'}})
+        self.assertFalse(any(r.get('suppressedByPrior') for r in doc['findings']))
 
 
 if __name__ == "__main__":

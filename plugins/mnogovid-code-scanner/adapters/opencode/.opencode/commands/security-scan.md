@@ -2,11 +2,66 @@
 description: Choose and run consent-gated workspace security assessment mode
 ---
 
-Run `security_bootstrap` first. If the profile is missing, ask before creating
-it; if invalid, stop. Then ask whether to use adapters only, adapters plus AI
-triage, or adapters plus AI triage and independent review. Follow all separate
-network, scanner, AI, and review consent gates. Never install tools, edit code,
-or apply patches.
+Run one unified Code Scanner workflow for the current workspace. Do not require
+command arguments.
+
+Before scanner-mode selection, call `security_bootstrap` with
+`createProfile=false`. If its profile action is `missing`, ask: “Create the
+missing `.mnogovid-code-scanner.json` profile in this workspace? This records
+discovery only; it does not start a scan.” Call it again with
+`createProfile=true` only after yes. If the profile is invalid, stop and report
+that it needs explicit repair. Send a separate utility-readiness message from
+the bootstrap doctor result: available adapters, missing adapters, detected
+package managers, and installation command templates. Package names must be
+verified for the current distribution. Do not proceed with selected unavailable
+adapters.
+
+Only after successful bootstrap, ask: “How should I analyze the evidence?”
+Present exactly these modes:
+
+- **Adapters only** — reproducible scanner evidence.
+- **Adapters + AI triage** — scanner evidence plus bounded, redacted host-AI
+  classification.
+- **Adapters + AI triage + independent review** — adds a separately approved
+  `security-triage` assessment after host-AI triage.
+
+Map the selected mode to `security_start_run`: `scan`, `scan-ai`, or
+`scan-agent`. Then ask separately about network-dependent scanners and every
+individual `security_run`; no answer other than an unambiguous yes permits the
+corresponding action. For AI modes, ask whether the selected AI is trusted to
+receive expanded non-secret diagnostics (`trustedAi`). Pass it only after an
+explicit yes; secrets, tokens, private keys, and authentication headers remain
+scrubbed in either mode.
+
+Call `security_plan`, start exactly one lifecycle, preview every adapter, and
+run only the approved allowlisted scanner with that lifecycle `runId`. The MCP
+server rejects an execution without an identical recorded preview. Record every preview, result, and
+skip. Do not install tools, edit code, make advisory lookups, or apply fixes.
+
+For AI modes, create `security_ai_triage_payload` only after AI-sharing consent
+and record one detailed `findingNotes` entry per finding. For independent
+review, ask a final separate consent and preserve scanner, host-AI, and agent
+evidence as distinct report sections. Finalize once and return the report path
+and coverage gaps.
+
+## Triage contract
+
+Follow security-triage's verdict and severity contract. You did not write this;
+try to refute it. Precision outranks recall; a defense-in-depth gap alone is not
+a vulnerability. `confirmed` requires `evidenceQuote`; severity is allowed only
+for confirmed findings. `needs_validation` requires `blocker` and a safe
+`validationPlan`; `rejected` requires `reason`. Keep findingId unchanged.
+Page payloads using nextOffset until exhausted; never silently stop at 40.
+Independent reviewers receive scanner/advisory evidence only, without host-AI
+verdicts, confidence, or rationale. Read `security_prior_runs` for history;
+prior rejected suppresses only an unchanged fingerprint. Return result.md and
+findings.json; prose does not change machine-readable verdicts.
+Severity anchors: critical — unauthenticated RCE, full data access or arbitrary
+account takeover; high — full explicit-control bypass with real consequences;
+medium — limited real boundary violation; low — non-secret internal disclosure;
+informational — verified minimal impact.
+Guidance adapted from Cloudflare security-audit-skill (MIT),
+https://github.com/cloudflare/security-audit-skill .
 
 ## Tool discovery and recovery
 

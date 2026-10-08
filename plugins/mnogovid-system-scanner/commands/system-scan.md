@@ -104,7 +104,9 @@ and an AI stream interruption does not mean the scanner must be killed.
 
 Use bootstrap's doctor result and then call `system_plan`; start exactly one
 lifecycle; preview every adapter; and execute only an identical, recorded
-preview with that lifecycle `runId`. When `system_run` returns a `jobId`, use
+preview with that lifecycle `runId`. After a client retry, reuse the active
+lifecycle and ignore duplicate preview/result records (the server answers
+`duplicate: true`). When `system_run` returns a `jobId`, use
 `system_record_job` to poll and record the normalized result directly; use
 `system_poll_job` only for status checks. Never construct scanner-result JSON
 from raw logs yourself.
@@ -141,6 +143,25 @@ independent review, ask a final separate consent, then keep scanner, host-AI,
 and reviewer evidence distinct. Finalize once and return the local report path
 and coverage gaps. A remote finalize response includes `storedLocally: true`;
 the remote copy is an implementation cache, not the handoff location.
+
+## Triage contract
+
+Follow system-triage's verdict and severity contract. You did not write this;
+try to refute it. Precision outranks recall; a defense-in-depth gap alone is not
+a vulnerability. `confirmed` requires `evidenceQuote`; severity is allowed only
+for confirmed findings. `needs_validation` requires `blocker` and a safe,
+read-only `validationPlan`; `rejected` requires `reason`.
+Independent reviewers receive scanner/advisory evidence only, without host-AI
+verdicts, confidence, or rationale. Read `system_prior_runs` for history on the
+chosen target; prior rejected suppresses only an unchanged fingerprint.
+Return result.md and findings.json; prose does not change machine-readable
+verdicts. State coverage gaps; a partial pass does not prove a clean host.
+Severity anchors: critical — unauthenticated RCE, full data access or arbitrary
+account takeover; high — full explicit-control bypass with real consequences;
+medium — limited real boundary violation; low — non-secret internal disclosure;
+informational — verified minimal impact.
+Guidance adapted from Cloudflare security-audit-skill (MIT),
+https://github.com/cloudflare/security-audit-skill .
 
 ## Tool discovery and recovery
 

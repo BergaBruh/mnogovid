@@ -30,7 +30,7 @@ reads its saved evidence. Use system_read_run for scanner diagnostics. Never
 generate Python or parse chat logs to recover findings. Record each batch with
 `host_ai_triage` and the same offset; the server merges batches and rejects
 missing indexes at finalization. The model must classify every finding as
-`true_positive`, `false_positive`, or `needs_review`, cite only the provided
+`confirmed`, `needs_validation`, or `rejected`, cite only the provided
 evidence, and treat package CVE matches as unverified until distribution
 backports are checked. Then finalize in `scan-ai` mode.
 

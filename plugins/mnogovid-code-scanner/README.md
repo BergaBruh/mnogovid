@@ -114,6 +114,27 @@ network access, profile writing, or scanner execution by itself.
 
 ## Report
 
+Finalization also writes `findings.json` beside `result.md`. Machine-readable
+verdicts are authoritative; report prose does not change them. New reviews use
+`confirmed` (requires `evidenceQuote`, optional severity), `needs_validation`
+(requires `blocker` and safe `validationPlan`), or `rejected` (requires `reason`).
+Severity is forbidden for non-confirmed verdicts. Legacy `true_positive`,
+`needs_review`, and `false_positive` remain accepted aliases.
+
+`security_prior_runs` reads prior verdicts by stable fingerprint. Only unchanged
+unassessed evidence matching prior `rejected` receives `suppressedByPrior`;
+findings remain visible. Preserve `findingId` in review notes and follow
+`nextOffset` through all triage pages. Independent reviewers receive no host-AI
+verdicts, confidence, or rationale. Secret-bearing paths remain withheld even
+with `trustedAi`. Source positions that cannot be verified are marked
+`location_unverified`, not newly confirmed.
+
+Reports state adapter coverage and partial-pass gaps. `sourceRef` captures Git
+commit and dirty state; missing metadata is null. A warning flags unignored
+`.mnogovid/` output. Generated/minified directories and files are excluded from
+discovery; lockfiles remain available for SCA.
+See [findings schema](../../docs/findings-schema.md) for contracts and attribution.
+
 Every scan writes a new report to:
 
 ```text

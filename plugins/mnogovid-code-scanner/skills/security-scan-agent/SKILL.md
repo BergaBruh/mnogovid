@@ -15,15 +15,18 @@ findings, and a separate `security-triage` review.
    preview, per-scanner consent, and host-AI sharing. Start one lifecycle in
    mode `scan-agent` and record every granted or denied consent.
 2. Preview and run approved scanners, recording every preview, result, and
-   skip in that lifecycle. Create the redacted payload and have the host model
-   analyze it only after the separate AI-sharing approval. Record that exact
+   skip in that lifecycle. Create the redacted payload with
+   `security_ai_triage_payload` (`trustedAi` only under the separate approval
+   described in `security-scan-ai`) and have the host model analyze it only
+   after the separate AI-sharing approval. Keep each `findingId` unchanged. Record that exact
    assessment with kind `host_ai_triage` before delegation, including a detailed
    AI note for every finding at its zero-based `findingIndex`.
 3. After host-AI triage is complete, ask separately: “May I give the bounded,
-   redacted findings and AI triage to the dedicated `security-triage` agent for
-   an independent review?” Do not delegate before an unambiguous yes.
-4. Invoke `security-triage` with only the redacted scanner evidence and
-   recorded host-AI triage. It may use primary advisory sources only when network access
+   redacted scanner findings to the dedicated `security-triage` agent for an
+   independent review?” Do not delegate before an unambiguous yes.
+4. Invoke `security-triage` with only the redacted scanner evidence (and
+   advisory evidence, if approved). Never pass host-AI verdicts, confidence,
+   or rationale. It may use primary advisory sources only when network access
    was approved; otherwise it must mark advisory claims as unverified.
 5. Keep scanner evidence, host-AI assessment, and agent assessment as distinct
    sections. The agent may propose remediation but must not modify files.

@@ -8,10 +8,15 @@ description: Run consent-gated Linux host checks, then obtain host-AI triage and
 Use this skill for the “adapters + AI triage + independent review” branch of
 the unified workflow. Follow bootstrap, toolchain validation, local/remote
 target selection, and host-AI triage first. Once triage is recorded, ask a
-separate question: “May I share the bounded, redacted results and AI triage
-with the independent system-triage agent?” Do not delegate before a clear yes.
+separate question: “May I share the bounded, redacted scanner results with the
+independent system-triage agent?” Do not delegate before a clear yes. Never
+pass host-AI verdicts, confidence, or rationale to the reviewer.
 The host-AI step may use `trustedAi` only after its own separate approval;
 that expands non-secret diagnostics but never permits credentials or keys.
+
+Build the host-AI payload as in `system-scan-ai`: `system_ai_triage_payload`
+in batches of 40 with `findingOffset`, and return every `findingId` unchanged
+in host-AI and reviewer notes.
 
 The reviewer is not another scanner: it validates only the supplied evidence,
 distinguishes confirmed facts from hypotheses, and does not modify the host.

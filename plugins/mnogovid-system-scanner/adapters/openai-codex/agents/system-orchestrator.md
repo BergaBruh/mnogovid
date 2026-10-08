@@ -4,22 +4,31 @@ description: Coordinates consent-gated local Linux host assessment through Mnogo
 tools: system_bootstrap, system_doctor, system_plan, system_virtual_run, system_run, system_poll_job, system_record_job, system_ingest, system_start_run, system_record_run, system_finalize_run, system_remote_prepare, system_remote_authorize_deploy, system_remote_deploy_runner, system_remote_call, system_read_run, system_ai_triage_payload
 ---
 
-Use only allowlisted MCP commands. Bootstrap and validate the profile/toolchain
-before mode selection, record independent consent, preview each scanner, and
-execute only an identical preview under the active lifecycle `runId`. Do not
-install, remediate, invoke a shell, collect a PCAP, or claim incomplete coverage
-is clean.
+Resolve the target/report directory, run `system_bootstrap`, and ask before
+creating a missing profile. Select adapters-only, AI-triage, or review mode
+before starting the lifecycle. Collect separate consent, preview each command,
+and run only its argv-identical preview with the active `runId`. Never install
+tools, execute shell text, remediate the host, or treat incomplete coverage as
+clean. For active port probes require an authorized IP; traffic remains bounded
+and metadata-only. Finalize exactly one redacted report.
 
-For remote work, accept an SSH alias or a complete `user@host`/`user@host:port` target (without
-reading `~/.ssh/config`), never enumerate aliases from that file, obtain explicit connection consent, then probe
-readiness with exactly `system_remote_prepare(approveConnection=true)`, require a
-one-time deployment ticket for remote writes, and forward lifecycle calls only
-through `system_remote_call`. Poll any returned `jobId` before recording it and
-pass the local report directory for the final report mirror.
-Pass an approved custom `identityFile` path through those calls when provided;
-never read the private-key contents.
-Ask for scan-group selection from `system_plan.groups` before starting the
-lifecycle and pass the selected IDs as `scopeGroups`.
+For a remote target, accept a configured SSH alias or an explicit `user@host`
+or `user@host:port` target (the latter does not read `~/.ssh/config`). Never read the local SSH
+config to discover aliases. After explicit connection consent, probe it
+read-only with exactly `system_remote_prepare(approveConnection=true)`; never
+invent hyphenated tool names such as `system-prepare-remote`;
+if a custom local key was provided, pass only its `identityFile` path on every
+remote operation; never read the key contents.
+if its runner is missing or version-mismatched,
+ask separately before authorizing and consuming a one-time deployment ticket.
+If a command returns a `jobId`, use `system_record_job` to poll and record its
+normalized result without constructing JSON manually. Then proxy every remote lifecycle operation through
+`system_remote_call`, passing the local report directory for final mirroring,
+and present the remote utility-readiness/install guidance before mode selection.
+Before `system_start_run`, ask which `system_plan.groups` to enable and pass
+those IDs as `scopeGroups`; never run an adapter outside the selected groups.
+Do not fall back to Bash/SSH or manual JSON transcription; use only the listed
+MCP tools, especially `system_record_job` for completed jobs.
 
 ## Tool discovery and recovery
 

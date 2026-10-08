@@ -8,14 +8,20 @@ bounded/redacted payload for the host model's AI triage.
 """
 from __future__ import annotations
 
-import json, os, platform, re, shutil, subprocess, sys, time, urllib.error, urllib.request
+import hashlib, json, os, platform, re, shutil, subprocess, sys, time, urllib.error, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 MAX_OUTPUT = 256 * 1024
 RUNS: dict[str, dict[str, Any]] = {}
-IGNORE = {".git", "node_modules", "target", ".venv", "__pycache__", "vendor", ".mnogovid"}
+IGNORE = {".git", "node_modules", "target", ".venv", "__pycache__", "vendor", ".mnogovid", "dist", ".next", ".tox", "site-packages", "__snapshots__", "testdata"}  # lockfiles stay: SCA needs them
+# Secret-bearing path deny-list. Pattern set adapted from alibaba/open-code-review (Apache-2.0),
+# internal/config/allowlist/default_secret_patterns.json.
+SECRET_PATH_RE = re.compile(r"(?<![\w.-])(?:[~\w./@-]*/)?(?:\.ssh(?:/[^\s'\",;]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|\.netrc|_netrc|\.npmrc|\.pypirc|\.dockercfg)(?![\w-])")
+
+def scrub_secret_paths(text: str) -> str: return SECRET_PATH_RE.sub("[REDACTED-PATH]", text)
+def is_secret_path(text: Any) -> bool: return isinstance(text, str) and SECRET_PATH_RE.search(text) is not None
 PROFILE_NAME = ".mnogovid-code-scanner.json"
 PACKAGE_MANAGER_TEMPLATES = {
     "apt-get":"sudo apt-get install <package>", "dnf":"sudo dnf install <package>",
@@ -29,7 +35,7 @@ ADAPTERS: dict[str, dict[str, Any]] = {
     "gosec": {"category":"sast","exe":"gosec","network":False,"cmd":lambda p:["-fmt=json","./..."],"cwd":True},
     "bandit": {"category":"sast","exe":"bandit","network":False,"cmd":lambda p:["-f","json","-r",str(p)]},
     "brakeman": {"category":"sast","exe":"brakeman","network":False,"cmd":lambda p:["-f","json","-p",str(p)]},
-    "gitleaks": {"category":"secrets","exe":"gitleaks","network":False,"cmd":lambda p:["detect","--source",str(p),"--report-format","json","--no-banner"]},
+    "gitleaks": {"category":"secrets","exe":"gitleaks","network":False,"cmd":lambda p:["detect","--source",str(p),"--report-format","json","--report-path","-","--redact","--no-banner"]},
     "trufflehog": {"category":"secrets","exe":"trufflehog","network":True,"cmd":lambda p:["filesystem",str(p),"--json"]},
     "detect-secrets": {"category":"secrets","exe":"detect-secrets","network":False,"cmd":lambda p:["scan",str(p)]},
     "trivy-fs": {"category":"sca","exe":"trivy","network":True,"cmd":lambda p:["fs","--format","json",str(p)]},
@@ -60,8 +66,138 @@ TOOLS = [
  {"name":"security_record_run","description":"Append scanner evidence, a preview, a skipped-scanner reason, host-AI triage, or independent agent review to a durable started scan lifecycle. It does not execute a process.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"runId":{"type":"string"},"kind":{"enum":["scanner","preview","skipped","host_ai_triage","agent_review"]},"entry":{"type":"object"}},"required":["workspace","runId","kind","entry"],"additionalProperties":False}},
  {"name":"security_finalize_run","description":"Finalize a durable started scan lifecycle and store its schema-owned redacted Markdown report, including any recorded host-AI triage and independent agent review. The result is <workspace>/.mnogovid/code-scanner/<unixtime>/result.md.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"runId":{"type":"string"},"initialization":{"type":"object"},"doctor":{"type":"object"},"plan":{"type":"object"},"hostAiTriage":{"type":"object"},"aiTriage":{"type":"object"},"agentReview":{"type":"object"}},"required":["workspace","runId"],"additionalProperties":False}},
  {"name":"security_advisory_lookup","description":"Query the OSV vulnerability advisory website for one package version. It makes an HTTPS request only when allowNetwork=true.","inputSchema":{"type":"object","properties":{"ecosystem":{"type":"string"},"package":{"type":"string"},"version":{"type":"string"},"allowNetwork":{"type":"boolean"}},"required":["ecosystem","package","version"],"additionalProperties":False}},
+ {"name":"security_prior_runs","description":"Read the latest verdict per finding fingerprint from earlier findings.json files. Read-only. A rejected verdict suppresses only an identical fingerprint.","inputSchema":{"type":"object","properties":{"workspace":{"type":"string"},"fingerprints":{"type":"array","items":{"type":"string"}}},"required":["workspace"],"additionalProperties":False}},
  {"name":"security_ai_triage_payload","description":"Prepare bounded findings for host-model AI triage. trustedAi=true permits expanded non-secret context after explicit consent; secrets remain scrubbed. It does not contact any model or website itself.","inputSchema":{"type":"object","properties":{"findings":{"type":"array"},"remediation":{"type":"boolean"},"trustedAi":{"type":"boolean"}},"required":["findings"],"additionalProperties":False}},
 ]
+
+def finding_fingerprint(finding: dict[str, Any]) -> str:
+    """Stable root-cause identity: independent of run and order."""
+    parts=[str(finding.get(k,"") or "").strip().lower() for k in ("adapter","ruleId","title","location","library","installedVersion")]
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:32]
+
+def withhold_secret_paths(finding: dict[str, Any]) -> dict[str, Any]:
+    """Findings located in secret-bearing paths never reach the model, even with trustedAi."""
+    if any(is_secret_path(v) for v in finding.values() if isinstance(v,str)):
+        return {k:v for k,v in finding.items() if k in ("adapter","severity","ruleId","fingerprint","findingId")}|{"withheld":"secret-bearing path"}
+    return finding
+
+# Independent reviewers must not see host-AI verdicts, confidence, or rationale.
+HOST_AI_KEYS={"verdict","classification","confidence","note","rationale","verdictSource","hostAiTriage"}
+
+def triage_page(items: list[Any], offset: Any) -> dict[str, Any]:
+    if not isinstance(offset,int) or isinstance(offset,bool) or offset<0: raise ValueError("findingOffset must be a non-negative integer")
+    page=[]
+    for index,item in enumerate(items[offset:offset+40],start=offset):
+        if isinstance(item,dict):
+            item={k:v for k,v in item.items() if k not in HOST_AI_KEYS}
+            item={**item,"fingerprint":finding_fingerprint(item)}
+            item["findingId"]=hashlib.sha256(json.dumps([index,item],sort_keys=True,default=str).encode()).hexdigest()
+            item=withhold_secret_paths(item)
+        page.append(item)
+    return {"findingCount":len(items),"findingLimit":len(page),"findingOffset":offset,"nextOffset":offset+40 if offset+40<len(items) else None,"findings":page}
+
+VERDICTS=("confirmed","needs_validation","rejected")
+VERDICT_ALIASES={"true_positive":"confirmed","needs_review":"needs_validation","false_positive":"rejected"}
+LEGACY_CLASS={"confirmed":"true_positive","needs_validation":"needs_review","rejected":"false_positive"}
+SEVERITIES=("critical","high","medium","low","informational")
+
+def _clip(value: Any, limit: int) -> str: return str(value).strip()[:limit]
+
+def verdict_note(note: dict[str, Any]) -> dict[str, Any]:
+    """Apply the per-verdict contract. Legacy classification names are accepted leniently. Returns {} for unknown values."""
+    raw=note.get("verdict",note.get("classification")); verdict=VERDICT_ALIASES.get(raw,raw)
+    if verdict not in VERDICTS: return {}
+    strict="verdict" in note or note.get("classification") in VERDICTS
+    out: dict[str,Any]={"verdict":verdict,"classification":LEGACY_CLASS[verdict]}
+    def text(key: str) -> str | None:
+        v=note.get(key); return _clip(v,1000) if isinstance(v,str) and v.strip() else None
+    if verdict!="confirmed" and note.get("severity") not in (None,""): raise ValueError("severity is allowed only on a confirmed verdict")
+    if verdict=="confirmed":
+        sev=note.get("severity")
+        if sev is not None and sev not in SEVERITIES: raise ValueError("severity must be one of: "+", ".join(SEVERITIES))
+        if sev is not None: out["severity"]=sev
+        if strict and not text("evidenceQuote"): raise ValueError("confirmed verdict requires an evidenceQuote taken from the supplied evidence")
+        if text("evidenceQuote"): out["evidenceQuote"]=text("evidenceQuote")
+    elif verdict=="needs_validation":
+        if strict and not (text("blocker") and text("validationPlan")): raise ValueError("needs_validation requires a blocker and a safe validationPlan")
+        for k in ("blocker","validationPlan"):
+            if text(k): out[k]=text(k)
+    else:
+        if strict and not text("reason"): raise ValueError("rejected verdict requires a reason")
+        if text("reason"): out["reason"]=text("reason")
+    return out
+
+def verify_location(root: Path, finding: dict[str, Any]) -> str | None:
+    """None: finding claims no file. 'verified' or 'location_unverified' otherwise."""
+    loc=next((finding[k] for k in ("path","file","filename","uri","location") if isinstance(finding.get(k),str) and finding[k]),None)
+    if loc is None: return None
+    loc=loc.removeprefix("file://"); path=Path(loc) if os.path.isabs(loc) else root/loc
+    try: path=path.resolve(); path.relative_to(root)
+    except (OSError,ValueError): return "location_unverified"
+    if is_secret_path(loc) or not path.is_file(): return "location_unverified" if not is_secret_path(loc) else "verified"
+    line=next((finding[k] for k in ("line","startLine") if isinstance(finding.get(k),int)),None)
+    if line is not None:
+        try:
+            if line<1 or path.stat().st_size>5_000_000: return "location_unverified"
+            with path.open("rb") as handle: total=sum(1 for _ in handle)
+        except OSError: return "location_unverified"
+        if line>max(total,1): return "location_unverified"
+    return "verified"
+
+def source_ref(root: Path) -> dict[str, Any]:
+    def git(*args: str) -> str | None:
+        try: r=subprocess.run(["git","-C",str(root),*args],capture_output=True,text=True,timeout=5)
+        except (OSError,subprocess.TimeoutExpired): return None
+        return r.stdout.strip() if r.returncode==0 else None
+    commit=git("rev-parse","HEAD")
+    return {"commit":commit,"dirty":bool(git("status","--porcelain")) if commit else None}
+
+def gitignore_warning(root: Path) -> str | None:
+    try: r=subprocess.run(["git","-C",str(root),"check-ignore","-q",".mnogovid/code-scanner/x"],capture_output=True,timeout=5)
+    except (OSError,subprocess.TimeoutExpired): return None
+    return ".mnogovid/ is not git-ignored in this repository; reports may be committed by accident." if r.returncode==1 else None
+
+def coverage_summary(root: Path, runs: list[dict[str, Any]], skipped: list[Any]) -> dict[str, Any]:
+    planned=recommend(discover(root)); status={}
+    skipped_ids={i.get("adapter") for i in skipped if isinstance(i,dict)}
+    for ident in planned:
+        results=[r.get("resultStatus") for r in runs if r.get("adapter")==ident]
+        status[ident]="covered" if "complete" in results and not {"incomplete","failed"}&set(results) else "partial" if results else "skipped" if ident in skipped_ids else "not_run"
+    return {"adapters":status,"partial":any(v!="covered" for v in status.values())}
+
+def prior_verdicts(root: Path) -> dict[str, dict[str, Any]]:
+    base=root/".mnogovid"/"code-scanner"; latest: dict[str,dict[str,Any]]={}
+    if not base.is_dir() or base.is_symlink(): return latest
+    for child in sorted((c for c in base.iterdir() if c.name.isdigit() and c.is_dir() and not c.is_symlink()),key=lambda c:int(c.name)):
+        path=child/"findings.json"
+        try:
+            if path.is_symlink() or path.stat().st_size>16*1024*1024: continue
+            doc=json.loads(path.read_text(encoding="utf-8"))
+        except (OSError,ValueError): continue
+        for rec in doc.get("findings",[]) if isinstance(doc,dict) else []:
+            if isinstance(rec,dict) and isinstance(rec.get("fingerprint"),str) and rec.get("verdict") in VERDICTS:
+                latest[rec["fingerprint"]]={"verdict":rec["verdict"],"reportId":child.name,**({"reason":rec["reason"]} if rec.get("reason") else {})}
+    return latest
+
+def build_findings_document(report: dict[str, Any], report_id: str, coverage: dict[str, Any], prior: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    runs=scanner_results(report); findings=findings_from(report,runs)
+    host=host_ai_notes(report,len(findings)); agent=host_ai_notes({"hostAiTriage":report.get("agentReview")},len(findings))
+    records=[]
+    for i,f in enumerate(findings):
+        final=agent.get(i) or host.get(i); v=verdict_note(final) if final else {}
+        rec: dict[str,Any]={"fingerprint":f.get("fingerprint") or finding_fingerprint(f),"findingId":f.get("findingId"),"adapter":f.get("adapter"),"title":finding_title(f),"location":finding_location_or_library(f),"scannerSeverity":finding_value(f,("severity","level","risk")) or "review","verdict":v.get("verdict","unassessed"),"verdictSource":("agent_review" if i in agent else "host_ai_triage") if v else None}
+        for k in ("severity","evidenceQuote","blocker","validationPlan","reason"):
+            if k in v: rec[k]=v[k]
+        if final and final.get("locationStatus"): rec["locationStatus"]=final["locationStatus"]
+        if i in host and i in agent:
+            a,b=verdict_note(host[i]).get("verdict"),verdict_note(agent[i]).get("verdict")
+            if a!=b: rec["disagreement"]={"hostAi":a,"agentReview":b}
+        earlier=prior.get(rec["fingerprint"])
+        if earlier:
+            rec["priorVerdict"]=earlier
+            if earlier["verdict"]=="rejected" and rec["verdict"]=="unassessed": rec["suppressedByPrior"]=True
+        records.append(rec)
+    return {"schemaVersion":1,"reportId":report_id,"startedAt":report.get("startedAt"),"sourceRef":report.get("sourceRef"),"coverage":coverage,"findings":sorted(records,key=lambda r:r["fingerprint"])}
 
 def workspace(value: Any) -> Path:
     if not isinstance(value,str) or not value: raise ValueError("workspace must be a non-empty string")
@@ -76,7 +212,9 @@ def discover(root: Path) -> dict[str, Any]:
     for base,dirs,files in os.walk(root):
         dirs[:]=[d for d in dirs if d not in IGNORE]
         for name in files:
-            visited+=1; path=Path(base,name); rel=str(path.relative_to(root))
+            visited+=1
+            if ".min." in name: continue
+            path=Path(base,name); rel=str(path.relative_to(root))
             if name in markers: manifests.append({"path":rel,"ecosystem":markers[name]})
             if name.startswith("Dockerfile"): surfaces.add("containers")
             if path.suffix==".tf": surfaces.add("terraform")
@@ -136,6 +274,7 @@ def redact(value: Any) -> Any:
     if isinstance(value,dict): return {str(k):redact("[REDACTED]" if re.search(r"(token|secret|password|api.?key|private.?key)",str(k),re.I) else v) for k,v in value.items()}
     if isinstance(value,list): return [redact(v) for v in value]
     if isinstance(value,str) and re.search(r"(ghp_|sk-|AKIA|-----BEGIN|(?:token|secret|password|api[_-]?key)\s*[=:])",value,re.I): return "[REDACTED]"
+    if isinstance(value,str): return scrub_secret_paths(value)
     return value
 
 def markdown_cell(value: Any) -> str:
@@ -246,14 +385,25 @@ def host_ai_notes(report: dict[str, Any], finding_count: int) -> dict[int, dict[
             notes[item["findingIndex"]]=item
     return notes
 
-def validate_host_ai_triage(run: dict[str, Any], entry: dict[str, Any]) -> None:
+def validate_host_ai_triage(run: dict[str, Any], entry: dict[str, Any], label: str = "host-AI triage") -> dict[str, Any]:
     finding_count = sum(len(item.get("findings",[])) for item in run["scannerResults"] if isinstance(item.get("findings"),list))
-    if finding_count == 0: return
+    if finding_count == 0: return entry
     notes = entry.get("findingNotes")
-    if not isinstance(notes,list): raise ValueError("host-AI triage must include findingNotes for every scanner finding")
+    if not isinstance(notes,list): raise ValueError(f"{label} must include findingNotes for every scanner finding")
     indexed = {item.get("findingIndex"):item for item in notes if isinstance(item,dict) and isinstance(item.get("findingIndex"),int)}
     missing = [index for index in range(finding_count) if not isinstance(indexed.get(index,{}).get("note"),str) or not indexed[index]["note"].strip()]
-    if missing: raise ValueError(f"host-AI triage is missing detailed notes for finding indexes: {missing}")
+    if missing: raise ValueError(f"{label} is missing detailed notes for finding indexes: {missing}")
+    root=Path(run["workspace"]) if run.get("workspace") else None; flat=findings_from({},run["scannerResults"]); out=[]
+    for item in notes:
+        if not isinstance(item,dict) or not isinstance(item.get("findingIndex"),int): out.append(item); continue
+        item={**item,**verdict_note(item)}; i=item["findingIndex"]
+        if root is not None and 0<=i<len(flat):
+            status=verify_location(root,flat[i])
+            if status=="location_unverified":
+                if item.get("verdict")=="confirmed": raise ValueError(f"finding {i} location is unverified; use needs_validation instead of confirmed")
+                item["locationStatus"]=status
+        out.append(item)
+    return {**entry,"findingNotes":out}
 
 def render_report(root: Path, mode: str, report_id: str, generated: str, report: dict[str, Any]) -> str:
     lines = ["# Security scan report", ""]
@@ -279,7 +429,7 @@ def render_report(root: Path, mode: str, report_id: str, generated: str, report:
         lines += [f"### {index + 1}. {finding_title(finding)}", ""]
         lines += [f"**Scanner:** {finding.get('adapter') or 'unknown'}  ", f"**Severity:** {finding_value(finding,('severity','level','risk')) or 'not provided'}  ", f"**Location:** {finding_location_or_library(finding)}", ""]
         if note:
-            lines += [f"**AI assessment:** {note.get('classification','needs_review')} (confidence: {note.get('confidence','not provided')})  ", f"**Why it matters:** {note.get('note','No detailed AI note was recorded.')}", ""]
+            lines += [f"**AI assessment:** {note.get('verdict') or note.get('classification','needs_review')}{', severity: '+str(note['severity']) if note.get('severity') else ''}{', LOCATION UNVERIFIED' if note.get('locationStatus') else ''} (confidence: {note.get('confidence','not provided')})  ", f"**Why it matters:** {note.get('note','No detailed AI note was recorded.')}", ""]
         elif mode in ("scan-ai","scan-agent"):
             lines += ["**AI assessment:** not recorded — this report is incomplete and should not have been finalized.", ""]
         else:
@@ -291,6 +441,11 @@ def render_report(root: Path, mode: str, report_id: str, generated: str, report:
         if count is None: count=len(run.get("findings",[])) if isinstance(run.get("findings"),list) else 0
         coverage_rows.append([run.get("adapter"),run.get("resultStatus"),count,"network" if run.get("requiresNetwork") else "local"])
     lines += markdown_table(["Scanner","Result","Findings","Access"],coverage_rows)
+    cov=report.get("coverage") or {}
+    if cov:
+        lines += ["## Coverage statement", ""]+markdown_table(["Adapter","Status"],[[k,v.replace("_"," ")] for k,v in cov.get("adapters",{}).items()])
+        if cov.get("partial"): lines += ["**This is a partial pass.** Adapters that were skipped, not run, or only partly covered are not evidence of clean code.", ""]
+    for w in report.get("warnings",[]): lines += [f"**Warning:** {w}", ""]
     lines += ["## Report details", ""]
     lines += markdown_table(["Report ID", "Generated", "AI analysis", "Independent review"], [[report_id,generated,"included" if "hostAiTriage" in report else "not requested","included" if "agentReview" in report else "not requested"]])
     return "\n".join(lines).rstrip() + "\n"
@@ -302,12 +457,18 @@ def write_report(root: Path, mode: str, report: dict[str, Any]) -> dict[str, Any
     if scanner_reports.exists() and scanner_reports.is_symlink(): raise ValueError("refusing to write reports through a symlinked code-scanner directory")
     report_id = str(time.time_ns()); destination = scanner_reports / report_id / "result.md"
     generated = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-    document = render_report(root,mode,report_id,generated,redact(report))
+    report=redact(report); runs_=scanner_results(report)
+    report["coverage"]=coverage_summary(root,runs_,report.get("skippedScanners",[]))
+    warning=gitignore_warning(root)
+    if warning: report["warnings"]=[warning]
+    findings_doc=json.dumps(redact(build_findings_document(report,report_id,report["coverage"],prior_verdicts(root))),ensure_ascii=False,indent=2)+"\n"
+    document = render_report(root,mode,report_id,generated,report)
     truncated = len(document.encode("utf-8")) > MAX_OUTPUT
     if truncated: document = document.encode("utf-8")[:MAX_OUTPUT].decode("utf-8","ignore") + "\n\n_Report truncated at the storage limit._\n"
     destination.parent.mkdir(parents=True, exist_ok=False)
     destination.write_text(document,encoding="utf-8")
-    return {"reportId":report_id,"path":str(destination),"redacted":True,"truncated":truncated}
+    (destination.parent/"findings.json").write_text(findings_doc,encoding="utf-8")
+    return {"reportId":report_id,"path":str(destination),"findingsPath":str(destination.parent/"findings.json"),"redacted":True,"truncated":truncated}
 
 def state_path(root: Path, run_id: Any) -> Path:
     if not isinstance(run_id,str) or not run_id.isdigit(): raise ValueError("runId must be a Unix timestamp")
@@ -361,6 +522,9 @@ def parse_report(value: Any, adapter: str|None=None) -> list[dict[str,Any]]:
             locations=artifact.get("locations") if isinstance(artifact.get("locations"),list) else []
             location=(locations[0].get("path") if locations and isinstance(locations[0],dict) else None)
             findings.append({"adapter":adapter,"ruleId":vulnerability.get("id"),"severity":vulnerability.get("severity"),"title":vulnerability.get("description") or vulnerability.get("id"),"library":artifact.get("name"),"installedVersion":artifact.get("version"),"fixedVersion":", ".join(fix.get("versions",[])) if isinstance(fix.get("versions"),list) else None,"location":location})
+    elif adapter=="gitleaks" and isinstance(value,list):
+        for item in value[:200]:
+            if isinstance(item,dict): findings.append({"adapter":adapter,"ruleId":item.get("RuleID"),"severity":"unknown","title":item.get("Description") or item.get("RuleID"),"location":item.get("File"),"line":item.get("StartLine")})
     elif isinstance(value,list):
         for item in value[:200]: findings.append({"adapter":adapter,"severity":item.get("Severity") or item.get("severity") if isinstance(item,dict) else "unknown","title":str(item)[:500]})
     return redact(findings)
@@ -399,31 +563,40 @@ def call(name:str,args:dict[str,Any])->dict[str,Any]:
             root=workspace(args.get("workspace")); mode=args.get("mode"); consent=args.get("consent")
             if mode not in ("scan","scan-ai","scan-agent") or not isinstance(consent,dict): raise ValueError("mode and consent are required")
             run_id=str(time.time_ns())
-            RUNS[run_id]={"workspace":str(root),"mode":mode,"consent":redact(consent),"startedAt":datetime.now(timezone.utc).replace(microsecond=0).isoformat(),"scannerResults":[],"virtualCommands":[],"skippedScanners":[],"hostAiTriage":{"status":"pending" if consent.get("aiTriage") is True else "not_authorized"},"agentReview":{"status":"pending" if consent.get("agentReview") is True else "not_authorized"}}
+            RUNS[run_id]={"workspace":str(root),"mode":mode,"consent":redact(consent),"startedAt":datetime.now(timezone.utc).replace(microsecond=0).isoformat(),"sourceRef":source_ref(root),"scannerResults":[],"virtualCommands":[],"skippedScanners":[],"hostAiTriage":{"status":"pending" if consent.get("aiTriage") is True else "not_authorized"},"agentReview":{"status":"pending" if consent.get("agentReview") is True else "not_authorized"}}
             save_run(root,run_id,RUNS[run_id]); return content({"runId":run_id,"workspace":str(root),"statePath":str(state_path(root,run_id)),"mode":mode,"consent":RUNS[run_id]["consent"],"processStarted":False,"reportWritten":False})
         if name=="security_record_run":
             root=workspace(args.get("workspace")); run_id=args.get("runId"); run=started_run(root,run_id); kind=args.get("kind"); entry=args.get("entry")
             if kind not in ("scanner","preview","skipped","host_ai_triage","agent_review") or not isinstance(entry,dict): raise ValueError("kind and entry are required")
             if kind in ("host_ai_triage","agent_review"):
-                if kind=="host_ai_triage": validate_host_ai_triage(run,entry)
+                entry=validate_host_ai_triage(run,entry,"host-AI triage" if kind=="host_ai_triage" else "agent review")
                 key={"host_ai_triage":"hostAiTriage","agent_review":"agentReview"}[kind]
                 run[key]=redact(entry); save_run(root,str(run_id),run); return content({"runId":run_id,"recorded":kind,"entry":run[key]})
             key={"scanner":"scannerResults","preview":"virtualCommands","skipped":"skippedScanners"}[kind]
-            run[key].append(redact(entry)); save_run(root,str(run_id),run); return content({"runId":run_id,"recorded":kind,"count":len(run[key])})
+            entry=redact(entry)
+            if kind=="scanner" and isinstance(entry.get("findings"),list):
+                base=sum(len(r.get("findings",[])) for r in run["scannerResults"] if isinstance(r.get("findings"),list)); fixed=[]
+                for n,f in enumerate(entry["findings"]):
+                    if isinstance(f,dict):
+                        f={**f,"adapter":f.get("adapter") or entry.get("adapter")}; f["fingerprint"]=finding_fingerprint(f)
+                        f["findingId"]=hashlib.sha256(json.dumps([run["startedAt"],base+n,f],sort_keys=True,default=str).encode()).hexdigest()
+                    fixed.append(f)
+                entry["findings"]=fixed
+            run[key].append(entry); save_run(root,str(run_id),run); return content({"runId":run_id,"recorded":kind,"count":len(run[key])})
         if name=="security_finalize_run":
             root=workspace(args.get("workspace")); run_id=args.get("runId"); run=started_run(root,run_id)
             legacy_ai=args.get("aiTriage")
             host_ai=args.get("hostAiTriage",legacy_ai)
             if host_ai is not None:
                 if not isinstance(host_ai,dict): raise ValueError("hostAiTriage must be an object")
-                validate_host_ai_triage(run,host_ai)
+                host_ai=validate_host_ai_triage(run,host_ai)
                 run["hostAiTriage"]=redact(host_ai)
             if args.get("agentReview") is not None:
                 if not isinstance(args["agentReview"],dict): raise ValueError("agentReview must be an object")
-                run["agentReview"]=redact(args["agentReview"])
+                run["agentReview"]=redact(validate_host_ai_triage(run,args["agentReview"],"agent review"))
             if run["mode"] in ("scan-ai","scan-agent") and run["consent"].get("aiTriage") is True and run["hostAiTriage"].get("status")=="pending": raise ValueError("record host-AI triage before finalizing an approved AI scan")
             if run["mode"]=="scan-agent" and run["consent"].get("agentReview") is True and run["agentReview"].get("status")=="pending": raise ValueError("record agent review before finalizing an approved agent scan")
-            report={"runId":run_id,"startedAt":run["startedAt"],"consent":run["consent"],"scannerResults":run["scannerResults"],"virtualCommands":run["virtualCommands"],"skippedScanners":run["skippedScanners"]}
+            report={"runId":run_id,"startedAt":run["startedAt"],"sourceRef":run.get("sourceRef"),"consent":run["consent"],"scannerResults":run["scannerResults"],"virtualCommands":run["virtualCommands"],"skippedScanners":run["skippedScanners"]}
             if run["mode"] in ("scan-ai","scan-agent"): report["hostAiTriage"]=run["hostAiTriage"]
             if run["mode"]=="scan-agent": report["agentReview"]=run["agentReview"]
             for key in ("initialization","doctor","plan"):
@@ -459,10 +632,16 @@ def call(name:str,args:dict[str,Any])->dict[str,Any]:
             except (urllib.error.URLError,TimeoutError,json.JSONDecodeError) as exc: raise ValueError(f"OSV advisory lookup failed: {exc}")
             vulns=raw.get("vulns",[]) if isinstance(raw,dict) else []
             return content({"source":"OSV","networkUsed":True,"package":{"ecosystem":ecosystem,"name":package_name,"version":version},"vulnerabilities":[{"id":v.get("id"),"summary":v.get("summary"),"modified":v.get("modified"),"aliases":v.get("aliases",[]),"references":v.get("references",[])} for v in vulns[:50]]})
+        if name=="security_prior_runs":
+            prior=prior_verdicts(workspace(args.get("workspace"))); fps=args.get("fingerprints")
+            if fps is not None:
+                if not isinstance(fps,list) or any(not isinstance(x,str) for x in fps): raise ValueError("fingerprints must be an array of strings")
+                prior={k:v for k,v in prior.items() if k in set(fps)}
+            return content({"priorCount":len(prior),"prior":dict(list(prior.items())[:500]),"rule":"A prior rejected verdict suppresses only the identical fingerprint; needs_validation and confirmed never suppress current work."})
         if name=="security_ai_triage_payload":
-            items=redact(args.get("findings"));
+            items=args.get("findings")
             if not isinstance(items,list): raise ValueError("findings must be an array")
-            return content({"mode":"remediation" if args.get("remediation") else "triage","privacyMode":"trusted-ai" if args.get("trustedAi") is True else "strict-redacted","findingLimit":min(len(items),40),"findings":items[:40],"instruction":"Return a JSON object with findingNotes: one item for every supplied finding, in the same zero-based findingIndex order. Each item must include findingIndex, classification (true_positive, false_positive, or needs_review), confidence, and a detailed evidence-based note. Cite only supplied evidence. Expanded trusted-ai context may include non-secret diagnostics only; secrets remain scrubbed. Propose patches only when remediation was explicitly requested."})
+            return content({"mode":"remediation" if args.get("remediation") else "triage","privacyMode":"trusted-ai" if args.get("trustedAi") is True else "strict-redacted",**redact(triage_page(items,args.get("findingOffset",0))),"instruction":"Return a JSON object with findingNotes: one item for every supplied finding, in the same zero-based findingIndex order. Each item must include findingIndex, verdict (confirmed with evidenceQuote and optional severity critical|high|medium|low|informational; needs_validation with blocker and validationPlan; rejected with reason; legacy true_positive/needs_review/false_positive still accepted), confidence, and a detailed evidence-based note. Cite only supplied evidence. Never confirm without quoting it. You did not write this finding; try to refute it. Expanded trusted-ai context may include non-secret diagnostics only; secrets remain scrubbed. Propose patches only when remediation was explicitly requested."})
         raise ValueError(f"unknown tool: {name}")
     except (ValueError,OSError,subprocess.TimeoutExpired) as exc: return content({"error":str(exc)},True)
 

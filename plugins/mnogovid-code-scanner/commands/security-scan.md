@@ -44,6 +44,25 @@ review, ask a final separate consent and preserve scanner, host-AI, and agent
 evidence as distinct report sections. Finalize once and return the report path
 and coverage gaps.
 
+## Triage contract
+
+Follow security-triage's verdict and severity contract. You did not write this;
+try to refute it. Precision outranks recall; a defense-in-depth gap alone is not
+a vulnerability. `confirmed` requires `evidenceQuote`; severity is allowed only
+for confirmed findings. `needs_validation` requires `blocker` and a safe
+`validationPlan`; `rejected` requires `reason`. Keep findingId unchanged.
+Page payloads using nextOffset until exhausted; never silently stop at 40.
+Independent reviewers receive scanner/advisory evidence only, without host-AI
+verdicts, confidence, or rationale. Read `security_prior_runs` for history;
+prior rejected suppresses only an unchanged fingerprint. Return result.md and
+findings.json; prose does not change machine-readable verdicts.
+Severity anchors: critical — unauthenticated RCE, full data access or arbitrary
+account takeover; high — full explicit-control bypass with real consequences;
+medium — limited real boundary violation; low — non-secret internal disclosure;
+informational — verified minimal impact.
+Guidance adapted from Cloudflare security-audit-skill (MIT),
+https://github.com/cloudflare/security-audit-skill .
+
 ## Tool discovery and recovery
 
 Before calling a tool, resolve its exact callable name and input schema from

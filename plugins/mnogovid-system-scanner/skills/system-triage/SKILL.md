@@ -7,16 +7,43 @@ description: Independently review bounded, redacted Linux host-security findings
 
 Use after the independent-review mode of the unified workflow and explicit
 approval to share redacted evidence. For each finding, state scanner evidence,
-host-AI context, confidence, likely false-positive causes, and the smallest
+independent confidence, likely false-positive causes, and the smallest
 next read-only verification.
+
+Normalize supplied reports with `system_ingest` when necessary; treat
+`system_ai_triage_payload` output only as a hypothesis.
 
 If the user separately permits network advisory lookup, call
 `system_advisory_lookup` for one exact package ecosystem/name/version and keep
-that result distinct from scanner and model evidence. Without that permission,
-mark advisory status unverified. Do not run scanners, access a host, request
-secrets, or claim that a clean scan proves absence of compromise. Treat traffic
+that result distinct from scanner and model evidence. An OSV lookup verifies
+only the submitted package version. Without that permission, mark advisory
+status unverified. Do not run scanners, access a host, run commands, propose
+automatic changes, request secrets, or claim that a clean scan proves absence
+of compromise. Treat traffic
 observations as sampled telemetry and CVE matches as potentially affected by
 distribution backports.
+
+## Verdict contract
+
+You did not write this; try to refute it. Independent reviewers must not receive
+host-AI verdicts, confidence, or rationale. Precision outranks recall: a
+defense-in-depth gap alone is not a vulnerability. Preserve findingId and index.
+`confirmed` requires an `evidenceQuote` from supplied evidence; severity is
+allowed only here. `needs_validation` requires `blocker` and a safe, read-only
+`validationPlan`; `rejected` requires `reason`.
+
+Severity anchors: critical — unauthenticated RCE, complete data-store access,
+or arbitrary account takeover; high — complete explicit-control bypass with
+real consequences; medium — real boundary violation with limited impact;
+low — non-secret internal disclosure; informational — verified minimal impact.
+Legacy aliases: true_positive=confirmed, needs_review=needs_validation,
+false_positive=rejected. New reviews use canonical verdicts. `findings.json`
+controls verdicts, not prose. `system_prior_runs` provides history; prior
+rejected suppresses only an unchanged fingerprint.
+
+Review guidance adapted from Cloudflare security-audit-skill (MIT):
+https://github.com/cloudflare/security-audit-skill . Path-exclusion guidance:
+Alibaba open-code-review (Apache-2.0), https://github.com/alibaba/open-code-review .
 
 ## Tool discovery and recovery
 

@@ -189,6 +189,7 @@ TOOLS = [
 ]
 
 
+TOOLS.append({'name': 'system_prior_runs', 'description': 'Read the latest verdict per finding fingerprint from earlier findings.json files under the report directory. Read-only; never executes scanners. A rejected verdict suppresses only an identical fingerprint.', 'inputSchema': {'type': 'object', 'properties': {'reportDirectory': {'type': 'string'}, 'fingerprints': {'type': 'array', 'items': {'type': 'string'}}}, 'required': ['reportDirectory'], 'additionalProperties': False}})
 TOOLS.append({'name': 'system_read_run', 'description': 'Read saved scanner results and diagnostics by lifecycle ID, without shell commands or transcript parsing. Does not execute scanners.', 'inputSchema': {'type': 'object', 'properties': {'reportDirectory': {'type': 'string'}, 'runId': {'type': 'string'}, 'scannerOffset': {'type': 'integer', 'minimum': 0}}, 'required': ['reportDirectory', 'runId'], 'additionalProperties': False}})
 for tool in TOOLS:
     if tool['name'] == 'system_remote_call':
@@ -465,6 +466,16 @@ def bootstrap(root: Path, create_profile: bool, requested_flag: Any = None) -> d
     return {"profile": profile, "flag": profile.get("flag"), "doctor": {**discovered, "missingExecutables": [item["executable"] for item in discovered["runs"] if not item["available"]]}, "processStarted": False}
 
 
+# Secret-bearing path deny-list. Pattern set adapted from alibaba/open-code-review
+# (Apache-2.0), internal/config/allowlist/default_secret_patterns.json.
+SECRET_PATH_RE = re.compile(r"(?<![\w.-])(?:[~\w./@-]*/)?(?:\.ssh(?:/[^\s'\",;]*)?|id_(?:rsa|dsa|ecdsa|ed25519)|\.netrc|_netrc|\.npmrc|\.pypirc|\.dockercfg)(?![\w-])")
+
+def scrub_secret_paths(text: str) -> str:
+    return SECRET_PATH_RE.sub("[REDACTED-PATH]", text)
+
+def is_secret_path(text: Any) -> bool:
+    return isinstance(text, str) and SECRET_PATH_RE.search(text) is not None
+
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): redact("[REDACTED]" if re.search(r"(token|secret|password|api.?key|private.?key)", str(k), re.I) else v) for k, v in value.items()}
@@ -472,6 +483,8 @@ def redact(value: Any) -> Any:
         return [redact(item) for item in value]
     if isinstance(value, str) and re.search(r"(ghp_|sk-|AKIA|-----BEGIN|(?:token|secret|password|api[_-]?key|authorization|bearer|cookie|session)\s*[=:])", value, re.I):
         return "[REDACTED]"
+    if isinstance(value, str):
+        return scrub_secret_paths(value)
     return value
 
 
@@ -491,6 +504,57 @@ def markdown_code(value: Any, limit: int = 500) -> str:
 def safe_json(value: Any) -> str:
     return json.dumps(redact(value), ensure_ascii=True, indent=2).replace("`", "\\u0060").replace("<", "\\u003c").replace(">", "\\u003e")
 
+
+VERDICTS = ("confirmed", "needs_validation", "rejected")
+VERDICT_ALIASES = {"true_positive": "confirmed", "needs_review": "needs_validation", "false_positive": "rejected"}
+LEGACY_CLASS = {"confirmed": "true_positive", "needs_validation": "needs_review", "rejected": "false_positive"}
+SEVERITIES = ("critical", "high", "medium", "low", "informational")
+
+def finding_fingerprint(finding: dict[str, Any]) -> str:
+    """Stable root-cause identity: independent of run, order, and scanner wording case."""
+    parts = [str(finding.get(key, "") or "").strip().lower() for key in ("adapter", "ruleId", "title", "location", "library", "installedVersion")]
+    parts.append(str(finding.get("line") or ""))
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:32]
+
+def normalize_verdict(note: dict[str, Any]) -> str:
+    raw = note.get("verdict", note.get("classification"))
+    verdict = VERDICT_ALIASES.get(raw, raw)
+    if verdict not in VERDICTS:
+        raise ValueError("triage notes must use ordered findingIndex and a known classification")
+    return verdict
+
+def verdict_fields(note: dict[str, Any], verdict: str) -> dict[str, Any]:
+    """Enforce the per-verdict contract. Legacy classification names are accepted leniently."""
+    strict = "verdict" in note or note.get("classification") in VERDICTS
+    out: dict[str, Any] = {"verdict": verdict, "classification": LEGACY_CLASS[verdict]}
+    if verdict != "confirmed" and note.get("severity") not in (None, ""):
+        raise ValueError("severity is allowed only on a confirmed verdict")
+    if verdict == "confirmed":
+        severity = note.get("severity")
+        if severity is not None and severity not in SEVERITIES:
+            raise ValueError("severity must be one of: " + ", ".join(SEVERITIES))
+        if severity is not None:
+            out["severity"] = severity
+        quote = note.get("evidenceQuote")
+        if strict and (not isinstance(quote, str) or not quote.strip()):
+            raise ValueError("confirmed verdict requires an evidenceQuote taken from the supplied evidence")
+        if isinstance(quote, str) and quote.strip():
+            out["evidenceQuote"] = bounded_text(quote, 1000)
+    elif verdict == "needs_validation":
+        blocker, plan = note.get("blocker"), note.get("validationPlan")
+        if strict and (not isinstance(blocker, str) or not blocker.strip() or not isinstance(plan, str) or not plan.strip()):
+            raise ValueError("needs_validation requires a blocker and a safe validationPlan")
+        if isinstance(blocker, str) and blocker.strip():
+            out["blocker"] = bounded_text(blocker, 1000)
+        if isinstance(plan, str) and plan.strip():
+            out["validationPlan"] = bounded_text(plan, 1000)
+    else:
+        reason = note.get("reason")
+        if strict and (not isinstance(reason, str) or not reason.strip()):
+            raise ValueError("rejected verdict requires a reason")
+        if isinstance(reason, str) and reason.strip():
+            out["reason"] = bounded_text(reason, 1000)
+    return out
 
 def normalize_consent(value: Any) -> dict[str, bool]:
     keys = {"profileWrite", "rootPrivileges", "network", "activeNetwork", "trafficCapture", "serviceProbe", "aiTriage", "trustedAi", "agentReview"}
@@ -542,8 +606,9 @@ def normalize_entry(kind: str, entry: dict[str, Any], finding_count: int) -> dic
         raise ValueError("triage entry requires a non-empty findingNotes list and non-negative findingOffset")
     normalized = []
     for expected, note in enumerate(notes):
-        if not isinstance(note, dict) or not isinstance(note.get("findingIndex"), int) or note.get("findingIndex") != expected or note.get("classification") not in ("true_positive", "false_positive", "needs_review"):
+        if not isinstance(note, dict) or not isinstance(note.get("findingIndex"), int) or note.get("findingIndex") != expected :
             raise ValueError("triage notes must use ordered findingIndex and a known classification")
+        verdict = normalize_verdict(note)
         confidence = note.get("confidence")
         if isinstance(confidence, str):
             confidence = {"high": 0.9, "medium": 0.6, "low": 0.3}.get(confidence.lower())
@@ -552,7 +617,7 @@ def normalize_entry(kind: str, entry: dict[str, Any], finding_count: int) -> dic
         global_index = offset + expected
         if global_index >= finding_count:
             raise ValueError("triage findingIndex is outside the recorded finding set")
-        normalized.append({"findingIndex": global_index, "classification": note["classification"], "confidence": confidence, "note": bounded_text(note["note"], 2000)})
+        normalized.append({"findingIndex": global_index, **verdict_fields(note, verdict), "confidence": confidence, "note": bounded_text(note["note"], 2000)})
     return {"findingNotes": normalized, "findingOffset": offset}
 
 
@@ -1006,6 +1071,7 @@ def store_scanner(run: dict[str, Any], result: dict[str, Any]) -> tuple[dict[str
     key = hashlib.sha256(json.dumps([normalized['adapter'], normalized['command']], sort_keys=True).encode()).hexdigest()
     normalized['resultId'] = key
     for index, finding in enumerate(normalized['findings']):
+        finding['fingerprint'] = finding_fingerprint(finding)
         finding['findingId'] = hashlib.sha256(json.dumps([run['startedAt'], key, index, finding], sort_keys=True).encode()).hexdigest()
     for previous in run['scannerResults']:
         if previous.get('resultId') == key:
@@ -1256,6 +1322,12 @@ def render_report(root: Path, run: dict[str, Any], report_id: str, lifecycle_id:
         group_gaps = sum(item.get("resultStatus") in {"incomplete", "failed"} for item in recorded) + sum(item.get("adapter") in planned for item in skipped)
         lines.append(f"| {safe_text(group, 40)} | {'yes' if group in selected else 'no'} | {len(planned)} | {len(recorded)} | {sum(item.get('resultStatus') == 'complete' for item in recorded)} | {group_gaps} |")
     lines.append("")
+    coverage = coverage_summary(run)
+    lines += ["## Coverage statement", "", "| Group | Status |", "| --- | --- |"]
+    lines += [f"| {safe_text(group, 40)} | {status.replace('_', ' ')} |" for group, status in coverage["groups"].items()]
+    lines.append("")
+    if coverage["partial"]:
+        lines += ["**This is a partial pass.** Groups that are not selected, not run, or only partly covered are not evidence of a clean host.", ""]
     relationship_table, relationship_chart = relationship_graph(scanners, skipped, selected)
     lines += relationship_table + relationship_chart
     lines += ["## Scope and methodology", "", "| Item | Recorded value |", "| --- | --- |", f"| Target directory | {safe_text(root, 512)} |", f"| Mode | {safe_text(run.get('mode', '—'), 40)} |", f"| Selected groups | {safe_text(selected_groups, 300)} |", "| Execution | Allowlisted commands, consent-gated and read-only |", "| Exploitation | Not performed |", "| Remediation | Not performed |", ""]
@@ -1298,7 +1370,7 @@ def render_report(root: Path, run: dict[str, Any], report_id: str, lifecycle_id:
             lines.append("**Mitigation:** validate the finding with the service/package owner and apply vendor hardening guidance if confirmed; this workflow does not modify the host.")
         lines.append("")
         if note:
-            lines += [f"**AI assessment:** {safe_text(note.get('classification', 'needs_review'), 40)} (confidence: {note.get('confidence', 'not provided')})  ", f"**Why it matters:** {safe_text(note.get('note', 'No detailed note recorded.'), 2000)}", ""]
+            lines += [f"**AI assessment:** {safe_text(note.get('classification', 'needs_review'), 40)} (verdict: {safe_text(note.get('verdict', 'needs_validation'), 40)}{', severity: ' + safe_text(note['severity'], 40) if note.get('severity') else ''}; confidence: {note.get('confidence', 'not provided')})  ", f"**Why it matters:** {safe_text(note.get('note', 'No detailed note recorded.'), 2000)}", ""]
         if agent_note:
             lines += [f"**Independent review:** {safe_text(agent_note.get('classification', 'needs_review'), 40)} (confidence: {safe_text(agent_note.get('confidence', 'not provided'), 40)})  ", f"**Reviewer note:** {safe_text(agent_note.get('note', 'No detailed note recorded.'), 2000)}", ""]
         if not note and not agent_note:
@@ -1335,6 +1407,82 @@ def render_report(root: Path, run: dict[str, Any], report_id: str, lifecycle_id:
     return "\n".join(lines)
 
 
+def assessed_verdict(note: dict[str, Any] | None) -> str | None:
+    if not isinstance(note, dict):
+        return None
+    raw = note.get("verdict", note.get("classification"))
+    return VERDICT_ALIASES.get(raw, raw) if VERDICT_ALIASES.get(raw, raw) in VERDICTS else None
+
+def build_findings_document(run: dict[str, Any], report_id: str, prior: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Machine-readable verdicts. Prose in result.md never changes these records."""
+    findings = [f for scanner in run.get("scannerResults", []) for f in scanner.get("findings", []) if isinstance(f, dict)]
+    host = {n["findingIndex"]: n for n in (run.get("hostAiTriage") or {}).get("findingNotes", []) if isinstance(n, dict) and isinstance(n.get("findingIndex"), int)}
+    agent = {n["findingIndex"]: n for n in (run.get("agentReview") or {}).get("findingNotes", []) if isinstance(n, dict) and isinstance(n.get("findingIndex"), int)}
+    records = []
+    for index, finding in enumerate(findings):
+        final = agent.get(index) or host.get(index)
+        verdict = assessed_verdict(final)
+        record: dict[str, Any] = {
+            "fingerprint": finding.get("fingerprint") or finding_fingerprint(finding),
+            "findingId": finding.get("findingId"),
+            "adapter": finding.get("adapter"),
+            "title": finding_title(finding),
+            "location": finding_location_or_library(finding),
+            "scannerSeverity": finding.get("severity", "review"),
+            "verdict": verdict or "unassessed",
+            "verdictSource": "agent_review" if index in agent and verdict else "host_ai_triage" if index in host and verdict else None,
+        }
+        for key in ("severity", "evidenceQuote", "blocker", "validationPlan", "reason"):
+            if final and verdict and key in final:
+                record[key] = final[key]
+        earlier = (prior or {}).get(record["fingerprint"])
+        if earlier:
+            record["priorVerdict"] = earlier
+            # Only an identical fingerprint is suppressed, and only a prior rejected verdict counts.
+            if earlier.get("verdict") == "rejected" and record["verdict"] == "unassessed":
+                record["suppressedByPrior"] = True
+        if index in host and index in agent and assessed_verdict(host[index]) != assessed_verdict(agent[index]):
+            record["disagreement"] = {"hostAi": assessed_verdict(host[index]), "agentReview": assessed_verdict(agent[index])}
+        records.append(record)
+    return {"schemaVersion": 1, "reportId": report_id, "startedAt": run.get("startedAt"), "mode": run.get("mode"), "scopeGroups": run.get("scopeGroups", list(SCAN_GROUPS)), "findings": sorted(records, key=lambda r: r["fingerprint"]), "coverage": coverage_summary(run)}
+
+def coverage_summary(run: dict[str, Any]) -> dict[str, Any]:
+    scanners = run.get("scannerResults", [])
+    skipped = run.get("skippedScanners", [])
+    selected = run.get("scopeGroups", list(SCAN_GROUPS))
+    groups = {}
+    for group, metadata in SCAN_GROUPS.items():
+        planned = [ident for ident, spec in ADAPTERS.items() if spec.get("category") in metadata["categories"]]
+        recorded = [item for item in scanners if item.get("adapter") in planned]
+        if group not in selected:
+            status = "not_selected"
+        elif any(item.get("resultStatus") == "complete" for item in recorded) and not any(item.get("resultStatus") in {"incomplete", "failed"} for item in recorded) and not any(item.get("adapter") in planned for item in skipped):
+            status = "covered"
+        elif recorded or any(item.get("adapter") in planned for item in skipped):
+            status = "partial"
+        else:
+            status = "not_run"
+        groups[group] = status
+    complete = all(status == "covered" for status in groups.values())
+    return {"groups": groups, "partial": not complete}
+
+def prior_verdicts(root: Path) -> dict[str, dict[str, Any]]:
+    """Latest recorded verdict per fingerprint from earlier findings.json files (read-only)."""
+    base = root / ".mnogovid" / "system-scanner"
+    latest: dict[str, dict[str, Any]] = {}
+    if not base.is_dir() or base.is_symlink():
+        return latest
+    for child in sorted((c for c in base.iterdir() if c.name.isdigit() and c.is_dir() and not c.is_symlink()), key=lambda c: int(c.name)):
+        path = child / "findings.json"
+        try:
+            document = json.loads(read_regular_file(path, MAX_REPORT))
+        except (OSError, ValueError):
+            continue
+        for record in document.get("findings", []) if isinstance(document, dict) else []:
+            if isinstance(record, dict) and isinstance(record.get("fingerprint"), str) and record.get("verdict") in VERDICTS:
+                latest[record["fingerprint"]] = {"verdict": record["verdict"], "reportId": child.name, **({"reason": record["reason"]} if record.get("reason") else {})}
+    return latest
+
 def write_report(root: Path, run: dict[str, Any], lifecycle_id: str | None = None) -> dict[str, Any]:
     report_id = str(time.time_ns())
     destination_root = run_directory(root, report_id, create=True)
@@ -1343,8 +1491,11 @@ def write_report(root: Path, run: dict[str, Any], lifecycle_id: str | None = Non
     if len(document.encode('utf-8')) > MAX_REPORT:
         raise ValueError('Report exceeds 16 MiB; lifecycle retained, no truncated report written')
     truncated = False
+    findings_path = destination_root / "findings.json"
+    findings_document = safe_json(build_findings_document(run, report_id, prior_verdicts(root))) + "\n"
     atomic_write(destination, document, replace=False)
-    return {"reportId": report_id, "path": str(destination), "redacted": True, "truncated": truncated}
+    atomic_write(findings_path, findings_document, replace=False)
+    return {"reportId": report_id, "path": str(destination), "findingsPath": str(findings_path), "redacted": True, "truncated": truncated}
 
 
 def validate_ssh_alias(value: Any) -> str:
@@ -1582,6 +1733,16 @@ def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         if name == "system_catalog":
             return content({"adapters": [{"id": key, "category": value["category"], "executable": value["exe"], "requiresRoot": value.get("requiresRoot", False), "requiresNetwork": value.get("network", False), "requiresActiveNetwork": value.get("active", False), "requiresTrafficCapture": value.get("traffic", False), "requiresServiceProbe": value.get("serviceProbe", False)} for key, value in ADAPTERS.items()], "safety": "No remediation, installations, arbitrary commands, PCAP files, or unapproved root/network/service probes. Sensitive service and Docker output is normalized before it is returned."})
+        if name == 'system_prior_runs':
+            root = report_directory(args.get('reportDirectory'))
+            prior = prior_verdicts(root)
+            fingerprints = args.get('fingerprints')
+            if fingerprints is not None:
+                if not isinstance(fingerprints, list) or any(not isinstance(item, str) for item in fingerprints):
+                    raise ValueError('fingerprints must be an array of strings')
+                wanted = set(fingerprints)
+                prior = {key: value for key, value in prior.items() if key in wanted}
+            return content({'priorCount': len(prior), 'prior': dict(list(prior.items())[:500]), 'rule': 'A prior rejected verdict suppresses only the identical fingerprint; needs_validation and confirmed never suppress current work.'})
         if name == 'system_read_run':
             root = report_directory(args.get('reportDirectory'))
             run = started_run(root, args.get('runId'))
@@ -1714,6 +1875,11 @@ def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
                     save_run(root, str(run_id), run)
                     return content({'runId': run_id, 'recorded': kind, 'duplicate': duplicate})
                 raise ValueError('No saved execution matches this evidence; run the approved scanner through MCP')
+            elif kind == 'preview':
+                normalized = normalize_entry(kind, entry, finding_count)
+                group = adapter_group(normalized['adapter'])
+                if group not in run.get('scopeGroups', list(SCAN_GROUPS)):
+                    raise ValueError(f"scan group '{group}' was not selected for this lifecycle")
             else:
                 normalized = normalize_entry(kind, entry, finding_count)
             if kind in ('host_ai_triage', 'agent_review'):
@@ -1782,7 +1948,7 @@ def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(offset, int) or offset < 0 or offset > len(findings):
                 raise ValueError("findingOffset must be a non-negative integer within the supplied finding set")
             trusted = args.get("trustedAi") is True
-            return content({'findingCount': len(findings), 'findingLimit': len(findings[offset:offset + 40]), 'findingOffset': offset, 'nextOffset': offset + 40 if offset + 40 < len(findings) else None, 'privacyMode': 'trusted-ai' if trusted else 'strict-redacted', 'findings': findings[offset:offset + 40], 'instruction': 'Return findingNotes with each supplied findingId unchanged, classification (true_positive, false_positive, needs_review), confidence 0..1, and an evidence-based note. Never generate scanner evidence or infer identity from index alone. Legacy findings without IDs use batch-local findingIndex and findingOffset. Secrets remain scrubbed.'})
+            return content({'findingCount': len(findings), 'findingLimit': len(findings[offset:offset + 40]), 'findingOffset': offset, 'nextOffset': offset + 40 if offset + 40 < len(findings) else None, 'privacyMode': 'trusted-ai' if trusted else 'strict-redacted', 'findings': findings[offset:offset + 40], 'instruction': 'Return findingNotes with each supplied findingId unchanged, verdict (confirmed with evidenceQuote and optional severity critical|high|medium|low|informational; needs_validation with blocker and validationPlan; rejected with reason; legacy true_positive/needs_review/false_positive still accepted), confidence 0..1, and an evidence-based note. Never confirm without quoting supplied evidence. You did not write this finding; try to refute it. Never generate scanner evidence or infer identity from index alone. Legacy findings without IDs use batch-local findingIndex and findingOffset. Secrets remain scrubbed.'})
         if name == "system_advisory_lookup":
             if args.get("allowNetwork") is not True:
                 raise ValueError("OSV advisory lookup requires allowNetwork=true")

@@ -22,9 +22,10 @@ workflow. The scanners themselves never invoke an AI model.
    diagnostics (`trustedAi`); keep it false unless explicitly approved.
 4. After approval, call `security_ai_triage_payload`, then have the host model
    analyze its returned payload. Treat the model assessment as advisory:
-   preserve scanner evidence and classify each finding as true positive, false
-   positive, or needs review. It must return a detailed evidence-based note for
-   every input finding using the payload's zero-based `findingIndex`.
+   preserve scanner evidence and classify each finding as `confirmed`,
+   `needs_validation`, or `rejected`. It must return a detailed evidence-based note for
+   every input finding using the payload's zero-based `findingIndex`, and
+   return each supplied `findingId` unchanged.
 5. Record that exact redacted assessment in the lifecycle with
    `security_record_run` using kind `host_ai_triage`. The final report must use
    the recorded assessment, not a reconstructed summary.

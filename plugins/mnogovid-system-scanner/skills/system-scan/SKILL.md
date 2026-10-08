@@ -77,7 +77,8 @@ For a remote target, pass the local working directory as
 redacted report and the bridge stores it under that local directory; the
 remote runner retains its private working copy only for resumability.
 
-When host-AI triage has more than 40 findings, call
+For `scan-ai` and `scan-agent` modes only, when host-AI triage has more than 40
+findings, call
 `system_ai_triage_payload` with reportDirectory, runId and offsets 0, 40, 80,
 and so on. Record each batch with the matching `findingOffset`; duplicate
 previews, scanner results, and batches are idempotent.

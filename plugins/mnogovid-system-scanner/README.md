@@ -241,6 +241,20 @@ coverage gap—not a clean result.
 
 ## AI and independent review
 
+Finalization writes `findings.json` beside `result.md`; JSON verdicts are
+authoritative, not report prose. New reviews use `confirmed` with `evidenceQuote`
+and optional severity, `needs_validation` with `blocker` and safe read-only
+`validationPlan`, or `rejected` with `reason`. Severity is allowed only for
+confirmed findings. Legacy true_positive/needs_review/false_positive remain
+accepted aliases. Preserve findingId in notes and process every triage page.
+
+`system_prior_runs` reads history by stable fingerprint. Only unchanged,
+unassessed evidence matching prior rejected is marked `suppressedByPrior`;
+findings remain visible. Independent reviewers receive no host-AI verdicts,
+confidence, or rationale. Secret-bearing paths remain scrubbed. Coverage is
+reported per scan group; partial passes never prove a clean host.
+See [findings schema](../../docs/findings-schema.md) for contracts and attribution.
+
 The AI and independent-review modes create bounded payloads only after their
 own separate approvals. Strict-redacted mode is the default; `trustedAi` can
 expand non-secret diagnostics for the selected AI. Both assessments are

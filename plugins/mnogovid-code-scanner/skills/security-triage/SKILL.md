@@ -21,26 +21,48 @@ and not an automatic patcher.
 ## Workflow
 
 1. Keep scanner evidence, model interpretation, and external advisory evidence
-   as distinct sources.
+   as distinct sources. Normalize supplied reports with `security_ingest` when
+   necessary.
 2. Call `security_ai_triage_payload` only after the user approves sharing the
-   redacted findings. Ask the model to classify each item as true positive,
-   false positive, or needs review; do not ask it to invent missing evidence.
+   redacted findings, and treat the result only as a hypothesis. Request
+   `confirmed`, `needs_validation`, or `rejected`; do not ask it to invent
+   missing evidence.
 3. When network access is approved, use `security_advisory_lookup` for OSV and
    corroborate CVE identifiers, affected versions, and fixed versions with
    primary sources available to the host.
 4. Record uncertainty explicitly: unavailable package versions, missing source
-   context, and unverified advisory claims remain `needs_review`.
+   context, and unverified advisory claims remain `needs_validation`.
 5. Return ranked findings with evidence references and remediation proposals,
    never unreviewed automatic edits.
 
 ## Outputs
 
-The triage result states the classification, confidence, scanner evidence,
+The triage result states the verdict, confidence, scanner evidence,
 advisory evidence, affected and fixed versions when known, and a narrowly
 scoped remediation proposal. Any material supplied to a model is redacted and
 bounded before sharing.
 
 ## Boundaries
+
+You did not write this; try to refute it. Independent reviewers must not receive
+host-AI verdicts, confidence, or rationale. Precision outranks recall: a
+defense-in-depth gap alone is not a vulnerability. `confirmed` requires an
+`evidenceQuote` from supplied evidence; severity is allowed only for confirmed
+findings. `needs_validation` requires `blocker` and a safe, read-only
+`validationPlan`; `rejected` requires `reason`.
+
+Severity anchors: critical — unauthenticated RCE, complete data-store access,
+or arbitrary account takeover; high — complete explicit-control bypass with
+real consequences; medium — real boundary violation with limited impact;
+low — non-secret internal disclosure; informational — verified minimal impact.
+Legacy aliases: true_positive=confirmed, needs_review=needs_validation,
+false_positive=rejected. Use canonical verdicts for new reviews.
+`findings.json` controls verdicts, not report prose. `security_prior_runs`
+provides history; prior rejected suppresses only an unchanged fingerprint.
+
+Review guidance adapted from Cloudflare security-audit-skill (MIT):
+https://github.com/cloudflare/security-audit-skill . Path-exclusion guidance:
+Alibaba open-code-review (Apache-2.0), https://github.com/alibaba/open-code-review .
 
 - A model judgement never replaces scanner or advisory evidence.
 - No network request happens without separate approval.
