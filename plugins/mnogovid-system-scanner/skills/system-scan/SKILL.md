@@ -48,6 +48,12 @@ scanner workflow; it only marks how the profile was initialized.
 
 ## Workflow
 
+The user's initial prompt may already specify the target, scope, mode, and
+explicit approvals or denials. Use those answers without asking again; do not
+infer missing consent. In unattended runs, skip actions requiring missing
+approval and report the coverage gaps. Per-command approval after the exact
+preview and all lifecycle checks remain mandatory.
+
 1. Resolve an existing report directory; never use `/` as that directory.
 2. Call `system_bootstrap` with `createProfile=false`. Ask before creating a
    missing profile; stop on an invalid profile. Use its doctor result, then call
