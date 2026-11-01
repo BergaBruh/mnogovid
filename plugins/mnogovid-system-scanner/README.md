@@ -75,6 +75,25 @@ asking which mode to use: adapters only, adapters plus AI triage, or adapters
 plus AI triage and independent review. It collects all scanner permissions
 separately.
 
+### Provide scan parameters in the prompt
+
+You can supply choices and explicit approvals in your initial prompt, for
+example:
+
+```text
+Scan the remote server audit@example.com using Mnogovid System Scanner.
+I approve connecting to this target and checking runner readiness. Do not
+deploy or update the runner, or create a missing profile.
+Select Host baseline and Network exposure, using adapters-only mode.
+Do not use sudo, active Nmap probes, traffic capture, service probes, or
+networked vulnerability databases. Skip unavailable checks and report gaps.
+```
+
+Replace the example target with one you are authorized to assess. The workflow
+still requires individual approval after each exact command preview; supplying
+parameters in advance does not guarantee an unattended scan. OpenCode or the
+host client may also require separate tool permissions.
+
 ### Remote server over SSH-stdio MCP
 
 For the usual setup, define an exact `Host` alias directly in `~/.ssh/config`
