@@ -393,8 +393,8 @@ def installation_guide(found: dict[str, Any], runs: list[dict[str, Any]]) -> dic
     for run in runs:
         if run["available"]: continue
         packages = {manager: PACKAGE_HINTS.get(run["adapter"], {}).get(manager) for manager in managers}
-        missing.append({"adapter":run["adapter"],"executable":run["executable"],"candidatePackages":{key:value for key,value in packages.items() if value}})
-    return {"packageManagers":[{"name":name,"commandTemplate":PACKAGE_MANAGER_TEMPLATES[name]} for name in managers],"missingAdapters":missing,"note":"Candidate package names vary by distribution release; verify the package name before installing. The scanner never installs utilities itself."}
+        missing.append({"adapter":run["adapter"],"group":adapter_group(run["adapter"]),"executable":run["executable"],"executableAvailable":run.get("executableAvailable"),"candidatePackages":{key:value for key,value in packages.items() if value}})
+    return {"packageManagers":[{"name":name,"commandTemplate":PACKAGE_MANAGER_TEMPLATES[name]} for name in managers],"missingAdapters":missing,"note":"Package names are unverified candidates, not proof of an official source. Verify the distribution's official repository or vendor documentation before proposing installation. Do not install for excluded groups or when the executable exists but privileges are unavailable. The scanner never installs utilities itself."}
 
 
 def normalize_flag(value: Any) -> str | None:
@@ -429,8 +429,9 @@ def plan(_: Path) -> dict[str, Any]:
     runs = []
     for ident in recommend_host(found):
         spec = ADAPTERS[ident]
-        available = (trusted_executable(spec["exe"]) is not None if spec.get("requiresRoot") else shutil.which(spec["exe"]) is not None) and (not spec.get("requiresRoot") or trusted_executable("sudo") is not None)
-        runs.append({"adapter": ident, "category": spec["category"], "executable": spec["exe"], "available": available, "requiresRoot": spec.get("requiresRoot", False), "requiresNetwork": spec.get("network", False), "requiresActiveNetwork": spec.get("active", False), "requiresTrafficCapture": spec.get("traffic", False), "execution": "not_executed"})
+        executable_available = trusted_executable(spec["exe"]) is not None if spec.get("requiresRoot") else shutil.which(spec["exe"]) is not None
+        available = executable_available and (not spec.get("requiresRoot") or trusted_executable("sudo") is not None)
+        runs.append({"adapter": ident, "category": spec["category"], "executable": spec["exe"], "executableAvailable": executable_available, "available": available, "requiresRoot": spec.get("requiresRoot", False), "requiresNetwork": spec.get("network", False), "requiresActiveNetwork": spec.get("active", False), "requiresTrafficCapture": spec.get("traffic", False), "execution": "not_executed"})
     return {"host": found, "recommendedAdapters": recommend_host(found), "runs": runs, "groups": scope_summary(runs, found), "installationGuide":installation_guide(found,runs), "processStarted": False, "networkUsed": False, "trafficCaptured": False}
 
 
@@ -825,7 +826,7 @@ def finding_title(finding: dict[str, Any]) -> str:
 
 def scanner_recovery(run: dict[str, Any]) -> str:
     adapter = str(run.get("adapter") or "scanner")
-    steps = {"clamav": "Update trusted ClamAV signatures outside this workflow, then preview and rerun the scan.", "aide": "Verify that AIDE has a trusted baseline; do not initialize one on a possibly compromised host.", "lynis": "Rerun the previewed Lynis audit with required read permissions and inspect its redacted diagnostic.", "nmap-local": "Confirm target ownership and lifecycle consent, then rerun only the previously previewed literal-IP probe.", "tshark-summary": "Confirm the interface and bounded duration, then rerun without saving packet content.", "debsecan": "Refresh the local distribution advisory data through normal system administration, then rerun and validate backport status."}
+    steps = {"clamav": "Update trusted ClamAV signatures outside this workflow, then preview and rerun the scan.", "aide": "Verify AIDE configuration and a trusted baseline; do not initialize one on a possibly compromised host.", "lynis": "Rerun the previewed Lynis audit with required read permissions and inspect its redacted diagnostic.", "nmap-local": "Confirm target ownership and lifecycle consent, then rerun only the previously previewed literal-IP probe.", "tshark-summary": "Check the interface, duration and capture limits before a newly approved rerun; TShark may create temporary packet capture files.", "debsecan": "Refresh the local distribution advisory data through normal system administration, then rerun and validate backport status."}
     diagnostic = bounded_text(run.get("stderrSnippet", ""), 500)
     return steps.get(adapter, "Rerun the identical previewed command after resolving the recorded diagnostic.") + (f" Diagnostic: {diagnostic}" if diagnostic else "")
 
@@ -1331,7 +1332,7 @@ def render_report(root: Path, run: dict[str, Any], report_id: str, lifecycle_id:
     relationship_table, relationship_chart = relationship_graph(scanners, skipped, selected)
     lines += relationship_table + relationship_chart
     lines += ["## Scope and methodology", "", "| Item | Recorded value |", "| --- | --- |", f"| Target directory | {safe_text(root, 512)} |", f"| Mode | {safe_text(run.get('mode', '—'), 40)} |", f"| Selected groups | {safe_text(selected_groups, 300)} |", "| Execution | Allowlisted commands, consent-gated and read-only |", "| Exploitation | Not performed |", "| Remediation | Not performed |", ""]
-    lines += ["## Evidence and attachments", "", "| Artifact | Status |", "| --- | --- |", "| Normalized scanner records | Included in the private lifecycle state |", "| Finding IDs and scanner status | Included above for traceability |", "| Raw logs and packet captures | Not embedded or stored by this workflow |", "| Screenshots / video | Not captured by this workflow |", ""]
+    lines += ["## Evidence and attachments", "", "| Artifact | Status |", "| --- | --- |", "| Normalized scanner records | Included in the private lifecycle state |", "| Finding IDs and scanner status | Included above for traceability |", "| Raw logs and packet captures | Not embedded in the report; capture tools may create temporary files |", "| Screenshots / video | Not captured by this workflow |", ""]
     priority_classes = {"true_positive", "needs_review"}
     priority_indices = [
         index for index, finding in enumerate(findings)
@@ -1377,10 +1378,17 @@ def render_report(root: Path, run: dict[str, Any], report_id: str, lifecycle_id:
             lines += ["**Next step:** verify this host observation with a separate read-only check before treating it as malicious or benign.", ""]
     if incomplete or failed or skipped:
         lines += ["## Coverage gaps", ""]
-        for item in incomplete + failed:
-            lines.append(f"- **{safe_text(item.get('adapter', 'unknown'), 80)}:** {safe_text(item.get('resultStatus', 'unknown'), 40)}; {safe_text(scanner_recovery(item), 1200)}")
-        for item in skipped:
-            lines.append(f"- **{safe_text(item.get('adapter', 'unknown'), 80)}:** skipped; {safe_text(item.get('reason', 'not run'), 1200)}")
+        gaps = [(item, False) for item in incomplete + failed] + [(item, True) for item in skipped]
+        for group in list(SCAN_GROUPS) + ["other"]:
+            group_gaps = [(item, is_skipped) for item, is_skipped in gaps if (adapter_group(item["adapter"]) if item.get("adapter") in ADAPTERS else "other") == group]
+            if not group_gaps:
+                continue
+            lines += [f"### {safe_text(SCAN_GROUPS[group]['label'] if group in SCAN_GROUPS else 'Other', 120)}", ""]
+            for item, is_skipped in group_gaps:
+                detail = item.get('reason', 'not run') if is_skipped else scanner_recovery(item)
+                status = 'skipped' if is_skipped else item.get('resultStatus', 'unknown')
+                lines.append(f"- **{safe_text(item.get('adapter', 'unknown'), 80)}:** {safe_text(status, 40)}; {safe_text(detail, 1200)}")
+            lines.append("")
         lines.append("")
     lines += ["## Scan coverage", "", "| Scanner | Result | Findings | Observations | Access |", "| --- | --- | --- | --- | --- |"]
     for item in scanners:

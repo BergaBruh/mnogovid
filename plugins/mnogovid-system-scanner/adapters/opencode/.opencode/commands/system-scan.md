@@ -61,7 +61,17 @@ Before scanner-mode selection, complete bootstrap for the selected target.
    For a remote target, obtain the same message through `system_remote_call`.
    Pass the current local working directory as `localReportDirectory` on every
    remote call; it is used only for the final local report mirror.
-   Do not continue to scanning while required selected adapters are missing.
+    After scope selection, group readiness by selected scan group. For missing
+    executables needed by that scope, offer installation by the operator from
+    the distribution's official repository or the vendor's official source;
+    verify the source and package for this OS before suggesting commands.
+    Candidate names are not proof of availability or provenance. Do not offer
+    installation for excluded groups, redundant alternatives, or an existing
+    executable blocked only by missing sudo. Explain configuration/signature
+    problems separately. The plugin never installs; ask the operator to perform
+    any installation and rerun bootstrap/plan afterwards. They may instead
+    continue with explicit partial coverage. Never initialize an AIDE baseline
+    on a potentially compromised host.
 3. **Scope:** Before mode selection, show the `groups` from `system_plan` and
    ask which groups to scan. Offer only groups with relevant adapters, marking
    unavailable/undetected groups explicitly:
@@ -73,8 +83,26 @@ Before scanner-mode selection, complete bootstrap for the selected target.
    - **Network exposure** — listeners, firewall and explicitly authorized Nmap target.
    - **Traffic** — bounded TShark metadata capture, only when explicitly requested.
    Record the selected IDs as `scopeGroups` in `system_start_run`; never run an
-   adapter outside those groups. A missing database/runtime is a skip, not a
-   reason to probe every client by default.
+    adapter outside those groups. A missing database/runtime is a skip, not a
+    reason to probe every client by default.
+    Before scanning, if malware or integrity is selected, offer the operator a
+    separate readiness step for the corresponding ClamAV or AIDE adapter; do
+    not claim readiness has been verified from executable discovery alone.
+    Ask whether configuration and trusted data are already available. If help
+    is wanted, use the selected host's distribution documentation and the
+    official guides: https://docs.clamav.net/manual/Usage/SignatureManagement.html
+    and https://aide.github.io/doc/. The upstream repositories are
+    https://github.com/Cisco-Talos/clamav and https://github.com/aide/aide.
+    https://clamav-mirror.ru/ is a user-suggested third-party mirror, not a
+    verified official source: mention it only as an optional alternative after
+    separate operator approval, and verify database authenticity and freshness
+    using ClamAV's supported mechanisms. Do not copy its destructive commands
+    or change mirror configuration automatically. Explain that FreshClam needs a working
+    configuration and downloads signatures over the network. For AIDE, check
+    configuration and an existing trusted baseline; never overwrite it or
+    initialize a baseline on a potentially compromised host. The operator
+    performs any setup separately; do not run setup through this plugin.
+    If declined or unverified, continue only with explicit partial coverage.
 4. **Mode:** Only after successful bootstrap and scope selection, ask: “How should I analyze the evidence?” Present exactly these modes:
    - **Adapters only** — reproducible local scanner evidence.
    - **Adapters + AI triage** — scanner evidence plus bounded, redacted host-AI
